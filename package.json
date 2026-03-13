@@ -1,0 +1,29 @@
+{
+  "dependencies": {
+    "@types/cors": "^2.8.19",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "tsx": "^4.21.0"
+  },
+  "name": "veltra-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "devDependencies": {
+    "@prisma/client": "^7.5.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.5.0",
+    "prisma": "^7.5.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module"
+}

@@ -1,0 +1,71 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/generated"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [vector]
+}
+
+enum GoalCategory {
+  RUNNING
+  STRENGTH
+  WEIGHT
+  HYBRID
+}
+
+enum GoalStatus {
+  ACTIVE
+  COMPLETED
+  ABANDONED
+}
+
+model User {
+  id         String       @id @default(uuid(7)) @db.Uuid
+  stravaId   String       @unique
+  name       String
+  createdAt  DateTime     @default(now())
+  profile    UserProfile?
+  goals      Goal[]
+  activities Activity[]
+}
+
+model UserProfile {
+  id              String  @id @default(uuid(7)) @db.Uuid
+  weight          Float?
+  profile_picture String?
+  userId          String  @unique @db.Uuid
+  user            User    @relation(fields: [userId], references: [id])
+}
+
+model Goal {
+  id        String                       @id @default(uuid(7)) @db.Uuid
+  title     String
+  category  GoalCategory
+  deadline  DateTime?
+  status    GoalStatus                   @default(ACTIVE)
+  embedding Unsupported("vector(1536)")?
+  userId    String                       @db.Uuid
+  user      User                         @relation(fields: [userId], references: [id])
+  createdAt DateTime                     @default(now())
+}
+
+model Activity {
+  id         String                       @id @default(uuid(7)) @db.Uuid
+  stravaId   String                       @unique
+  type       String
+  distance   Float?
+  movingTime Int?
+  insight    String?                      @db.Text
+  embedding  Unsupported("vector(1536)")?
+  userId     String                       @db.Uuid
+  user       User                         @relation(fields: [userId], references: [id])
+  createdAt  DateTime                     @default(now())
+}

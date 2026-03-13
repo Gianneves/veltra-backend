@@ -1,0 +1,17 @@
+# Dependências
+node_modules/
+dist/
+
+# Variáveis de ambiente (Segurança!)
+.env
+.env.local
+
+# Prisma
+/src/generated/
+/prisma/migrations/*.sql
+# (Opcional) Se quiser manter o histórico de SQL no Git, remova a linha acima. 
+# Mas nunca suba o banco de dados SQLite (.db) se for usar um dia.
+
+# Logs e Docker
+*.log
+.docker/
