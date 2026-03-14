@@ -3,6 +3,7 @@
 
 // Get a free hosted Postgres database in seconds: `npx create-db`
 
+
 generator client {
   provider        = "prisma-client"
   output          = "../src/generated"
@@ -49,7 +50,7 @@ model User {
 model UserProfile {
   id              String  @id @default(uuid(7)) @db.Uuid
   sex             Sex?
-  heigth          Float?
+  height          Float?
   weight          Float?
   city            String?
   state           String?
