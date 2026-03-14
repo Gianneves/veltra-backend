@@ -1,18 +1,18 @@
-import { PrismaClient } from '../generated/prisma/client.ts';
-import dotenv from 'dotenv';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import pg from 'pg';
+import 'dotenv/config';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const connectionString = process.env.DATABASE_URL;
 
-// Carrega o .env (importante para o runtime do Node)
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
-
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL não definida no runtime.');
+if (!connectionString) {
+  throw new Error('DATABASE_URL não definida.');
 }
 
-// No Prisma 7, basta instanciar assim. 
-// Ele buscará a config no prisma.config.ts automaticamente.
-export const prisma = new PrismaClient({} as any);
+// Criamos a conexão nativa do Postgres
+const pool = new pg.Pool({ connectionString });
+const adapter = new PrismaPg(pool);
+
+// Passamos o adapter explicitamente. 
+// Isso MATA o erro de "engine type client" de uma vez por todas.
+export const prisma = new PrismaClient({ adapter });
