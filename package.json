@@ -15,6 +15,7 @@
   "devDependencies": {
     "@prisma/client": "^7.5.0",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.5.0",
     "prisma": "^7.5.0",
     "ts-node": "^10.9.2",
