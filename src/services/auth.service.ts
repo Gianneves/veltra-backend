@@ -61,7 +61,7 @@ export const authService = {
                 name: athlete.firstname,
             },
             create: {
-                stravaId: athlete.id,
+                stravaId: stravaIdStr,
                 name: athlete.firstname,
                 accessToken: access_token,
                 refreshToken: refresh_token,
@@ -72,7 +72,7 @@ export const authService = {
                         weight: weight,
                         city: athlete.city,
                         state: athlete.state,
-                        profile_photo: athlete.profile_medium
+                        profile_picture: athlete.profile_medium
                     }
                 }
             }
@@ -84,6 +84,8 @@ export const authService = {
             throw new Error("MISSING_KEY")
         }
 
-        const token = jwt.sign({  })
+        const token = jwt.sign({ id: user.id }, secretKey, {expiresIn: 60 * 60})
+
+        return token
     }
 };
