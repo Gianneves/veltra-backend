@@ -3,33 +3,34 @@ dotenv.config()
 import axios from 'axios';
 import { prisma } from '../lib/prisma.ts';
 import jwt from 'jsonwebtoken';
+import { encrypt } from '../utils/crypto.ts';
 
 
 interface StravaAuthResponse {
-    access_token: string;
-    refresh_token: string;
-    expires_at: number;
+    access_token: string
+    refresh_token: string
+    expires_at: number
     athlete: {
-        id: number;
-        firstname: string;
-        lastname: string;
-        city: string | null;
-        state: string | null;
-        sex: 'M' | 'F' | null;
-        weight: number | null;
-        profile_medium: string;
+        id: number
+        firstname: string
+        lastname: string
+        city: string | null
+        state: string | null
+        sex: 'M' | 'F' | null
+        weight: number | null
+        profile_medium: string
     };
 }
 
 
 export const authService = {
     generateStravaAuthUrl: () => {
-        const clientId = process.env.STRAVA_CLIENT_ID;
-        const redirectUri = process.env.STRAVA_REDIRECT_URI;
+        const clientId = process.env.STRAVA_CLIENT_ID
+        const redirectUri = process.env.STRAVA_REDIRECT_URI
 
-        const scope = 'read,activity:read_all';
+        const scope = 'read,activity:read_all'
 
-        return `https://www.strava.com/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}`;
+        return `https://www.strava.com/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}`
     },
 
     authenticateWithStrava: async (code: string) => {
@@ -40,31 +41,33 @@ export const authService = {
             grant_type: 'authorization_code'
         });
 
-        const { access_token, refresh_token, expires_at, athlete } = response.data;
+        const { access_token, refresh_token, expires_at, athlete } = response.data
 
-        const weight = athlete.weight ? Number(athlete.weight) : null;
+        const weight = athlete.weight ? Number(athlete.weight) : null
 
-        let userSex: 'M' | 'F' | 'O' = 'O';
-        if (athlete.sex === 'M') userSex = 'M';
-        if (athlete.sex === 'F') userSex = 'F';
+        let userSex: 'M' | 'F' | 'O' = 'O'
+        if (athlete.sex === 'M') userSex = 'M'
+        if (athlete.sex === 'F') userSex = 'F'
 
         const stravaIdStr = String(athlete.id);
-        const expirationDate = new Date(expires_at * 1000);
+        const expirationDate = new Date(expires_at * 1000)
 
+        const encryptAccessToken = encrypt(access_token)
+        const encryptRefreshToken = encrypt(refresh_token)
 
         const user = await prisma.user.upsert({
             where: { stravaId: stravaIdStr },
             update: {
-                accessToken: access_token,
-                refreshToken: refresh_token,
+                accessToken: encryptAccessToken,
+                refreshToken: encryptRefreshToken,
                 expiresAt: expirationDate,
                 name: athlete.firstname,
             },
             create: {
                 stravaId: stravaIdStr,
                 name: athlete.firstname,
-                accessToken: access_token,
-                refreshToken: refresh_token,
+                accessToken: encryptAccessToken,
+                refreshToken: encryptRefreshToken,
                 expiresAt: expirationDate,
                 profile: {
                     create: {
