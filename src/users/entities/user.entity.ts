@@ -1,5 +1,6 @@
 import { IsEmail, IsNotEmpty, IsNumber, IsString } from 'class-validator';
-import { BeforeInsert, Column, CreateDateColumn, Entity, PrimaryColumn, UpdateDateColumn } from "typeorm";
+import { Activity } from 'src/activities/entities/activity.entity';
+import { BeforeInsert, Column, CreateDateColumn, Entity, OneToMany, PrimaryColumn, UpdateDateColumn } from "typeorm";
 import { v7 as uuidv7 } from "uuid";
 
 @Entity('users')
@@ -32,6 +33,9 @@ export class User {
 
     @UpdateDateColumn()
     updatedAt?: Date;
+
+    @OneToMany(() => Activity, (activity) => activity.user)
+    activities!: Activity[];
 
     @BeforeInsert()
     generateId() {
