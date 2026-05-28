@@ -26,6 +26,4 @@ export class StravaService {
 
         return response.data;
     }
-
-    
 }

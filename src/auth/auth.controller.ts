@@ -1,4 +1,4 @@
-import { Body, Controller, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
 
@@ -8,9 +8,21 @@ export class AuthController {
         private readonly authService: AuthService
     ){}
 
-    @Post('strava/callback')
+    @Get('strava/connect')
+    async loginWithStrava(@Res() res: Response) {
+        try {
+            const authUrl = this.authService.generateStravaAuthUrl();
+
+            return res.redirect(authUrl);
+        } catch (error: unknown) {
+            return res.status(500).json({ message: 'Erro ao redirecionar para o Strava.' });
+        }
+    }
+
+
+    @Get('strava/callback')
     async handleStravaCallback(
-        @Body('code') code: string,
+        @Query('code') code: string,
         @Res() res: Response
     ) {
         const { sessionId, sessionTtl } = await this.authService.handleStravaCallback(code);

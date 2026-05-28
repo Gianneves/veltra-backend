@@ -3,12 +3,14 @@ services:
     image: ankane/pgvector:latest
     container_name: veltra_db
     restart: always
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: ${DB_USER}
+      POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_DB: ${DB_DATABASE}
     ports:
-      - "${DB_PORT}:5432"
+      - "5432:5432"
     volumes:
       - veltra_postgres_data:/var/lib/postgresql/data
 
