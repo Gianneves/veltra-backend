@@ -7,6 +7,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
 import { StravaModule } from './strava/strava.module';
+import { ActivitiesModule } from './activities/activities.module';
 
 
 @Module({
@@ -35,7 +36,8 @@ import { StravaModule } from './strava/strava.module';
     UsersModule,
     RedisModule,
     AuthModule,
-    StravaModule],
+    StravaModule,
+    ActivitiesModule],
   controllers: [],
   providers: [
     {
