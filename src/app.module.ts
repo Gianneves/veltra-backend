@@ -8,6 +8,8 @@ import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
 import { StravaModule } from './strava/strava.module';
 import { ActivitiesModule } from './activities/activities.module';
+import { InsightsModule } from './insights/insights.module';
+import { AiModule } from './ai/ai.module';
 
 
 @Module({
@@ -29,15 +31,17 @@ import { ActivitiesModule } from './activities/activities.module';
         username: configService.get('DB_USERNAME'),
         database: configService.get('DB_DATABASE'),
         password: configService.get('DB_PASSWORD'),
-        autoLoadEntities: configService.get('DB_AUTOLOADENTITIES'),
-        synchronize: configService.get('DB_SYNCHRONIZE') === 1,
+        autoLoadEntities: configService.get('DB_AUTOLOADENTITIES') === '1',
+        synchronize: configService.get('DB_SYNCHRONIZE') === '1',
       }) as any,
     }),
     UsersModule,
     RedisModule,
     AuthModule,
     StravaModule,
-    ActivitiesModule],
+    ActivitiesModule,
+    InsightsModule,
+    AiModule],
   controllers: [],
   providers: [
     {
