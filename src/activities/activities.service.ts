@@ -1,26 +1,53 @@
 import { Injectable } from '@nestjs/common';
 import { CreateActivityDto } from './dto/create-activity.dto';
-import { UpdateActivityDto } from './dto/update-activity.dto';
+import { Repository } from 'typeorm';
+import { Activity } from './entities/activity.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+
+
 
 @Injectable()
 export class ActivitiesService {
-  create(createActivityDto: CreateActivityDto) {
-    return 'This action adds a new activity';
+  constructor(
+    @InjectRepository(Activity)
+    private readonly activityRepository: Repository<Activity>
+  ) {}
+  async create(createActivityDto: CreateActivityDto) {
+    try {
+
+      const activityExist = await this.findOne(createActivityDto.activityStravaId);
+
+      if (activityExist) {
+        throw new Error('Atividade já registrada.')
+      }
+
+      const activity = this.activityRepository.create(createActivityDto);
+
+      await this.activityRepository.save(activity);
+      
+    } catch (error: unknown) {
+      console.error('Falha com a conexão: ', error);
+    }
   }
 
-  findAll() {
-    return `This action returns all activities`;
+  async findAll() {
+      try {
+        const activities = await this.activityRepository.find({});
+
+        return activities;
+      } catch (error: unknown) {
+        console.error(error);
+      }
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} activity`;
+  async findOne(id: number) {
+      const activity = await this.activityRepository.findOneBy({ activityStravaId: id });
+
+      if (!activity) {
+        throw new Error('Atividade não encontrada');
+      }
+
+      return activity;
   }
 
-  update(id: number, updateActivityDto: UpdateActivityDto) {
-    return `This action updates a #${id} activity`;
-  }
-
-  remove(id: number) {
-    return `This action removes a #${id} activity`;
-  }
 }
