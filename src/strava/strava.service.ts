@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
-import { StravaAuthResponse } from 'src/utils/types';
+import { Activity, StravaAuthResponse } from 'src/utils/types';
 
 @Injectable()
 export class StravaService {
@@ -27,5 +27,17 @@ export class StravaService {
         return response.data;
     }
 
-    
+    async fetchAllActivities(code: string) {
+        try {
+            const response = await axios.get<Activity>('https://www.strava.com/athlete/activities', {
+                
+            });
+
+            return response.data
+
+        } catch (error: unknown) {
+            console.error(`Falha ao buscar atividades: ${error}`);
+        }
+    }
+
 }
