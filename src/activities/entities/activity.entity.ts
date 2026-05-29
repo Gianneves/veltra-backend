@@ -66,8 +66,8 @@ export class Activity {
     @Column()
     max_watts!: number;
 
-    @Column({ type: 'vector', length: 1563 })
-    embedding!: string;
+    @Column({ type: 'vector', length: 1563, nullable: true })
+    embedding?: string;
 
     @ManyToOne(() => User, (user) => user.activities, {
         onDelete: 'CASCADE',
