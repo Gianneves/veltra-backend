@@ -9,9 +9,9 @@ export class AuthController {
     ){}
 
     @Get('strava/connect')
-    async connectWithStrava() {
+    async connectWithStrava(@Res() res: Response) {
         const url = this.authService.generateStravaAuthUrl();
-        return { url };
+        return res.redirect(url);
     }
 
     @Post('strava/callback')
