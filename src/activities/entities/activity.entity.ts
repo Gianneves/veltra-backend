@@ -35,23 +35,23 @@ export class Activity {
     sport_type!: string;
 
     @IsNumber()
-    @Column()
+    @Column({ type: 'double precision' })
     distance!: number;
 
     @IsNumber()
-    @Column()
+    @Column({ type: 'double precision' })
     max_speed!: number;
 
     @IsNumber()
-    @Column()
+    @Column({ type: 'double precision' })
     total_elevation_gain!: number;
 
     @IsNumber()
-    @Column()
+    @Column({ type: 'double precision' })
     average_cadence!: number;
 
     @IsNumber()
-    @Column()
+    @Column({ type: 'double precision' })
     average_speed!: number;
 
     @IsNumber()
