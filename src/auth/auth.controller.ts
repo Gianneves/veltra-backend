@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Res } from '@nestjs/common';
+import { Controller, Get, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
 
@@ -14,9 +14,9 @@ export class AuthController {
         return res.redirect(url);
     }
 
-    @Post('strava/callback')
+    @Get('strava/callback')
     async handleStravaCallback(
-        @Body('code') code: string,
+        @Query('code') code: string,
         @Res() res: Response
     ) {
         const { sessionId, sessionTtl } = await this.authService.handleStravaCallback(code);
