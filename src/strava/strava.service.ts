@@ -29,12 +29,54 @@ export class StravaService {
 
     async fetchAllActivities(code: string) {
         try {
-            const response = await axios.get<Activity>('https://www.strava.com/athlete/activities', {
-                
-            });
 
-            return response.data
+            const allRunningActivities: any = [];
+            let page = 1;
+            const perPage = 200;
+            let keepFetching = true;
 
+            while (keepFetching) {
+                try {
+                    const response = await fetch(
+                        `https://strava.com{page}&per_page=${perPage}`,
+                        {
+                            method: 'GET',
+                            headers: {
+                                'Authorization': `Bearer ${code}`,
+                                'Content-Type': 'application/json'
+                            }
+                        }
+                    );
+
+                    if (!response.ok) {
+                        throw new Error(`Strava API Error: ${response.status}  ${response.statusText}`);
+                    }
+
+                    const activities = await response.json();
+
+                    if (activities.length === 0) {
+                        keepFetching = false;
+                        break;
+                    }
+
+                    const runs = activities.filter(activity => 
+                        activity.type === 'Run' || activity.sport_type === 'Run'
+                    );
+
+                    allRunningActivities.push(...runs);
+
+                    if (activities.length < perPage) {
+                        keepFetching = false;
+                    } else {
+                        page++;
+                    }
+                    
+                } catch (error) {
+                    console.error(`Failed to fetch page: ${page}:`, error);
+                    keepFetching = false;
+                }
+            }
+            return allRunningActivities;
         } catch (error: unknown) {
             console.error(`Falha ao buscar atividades: ${error}`);
         }

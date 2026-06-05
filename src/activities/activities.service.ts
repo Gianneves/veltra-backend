@@ -3,8 +3,7 @@ import { CreateActivityDto } from './dto/create-activity.dto';
 import { Repository } from 'typeorm';
 import { Activity } from './entities/activity.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-
-
+import { User } from 'src/users/entities/user.entity';
 
 @Injectable()
 export class ActivitiesService {
@@ -12,22 +11,21 @@ export class ActivitiesService {
     @InjectRepository(Activity)
     private readonly activityRepository: Repository<Activity>
   ) {}
-  async create(createActivityDto: CreateActivityDto) {
-    try {
 
-      const activityExist = await this.findOne(createActivityDto.activityStravaId);
+  async create(createActivityDto: CreateActivityDto, user?: User) {
+    const activityExist = await this.findOne(createActivityDto.activityStravaId);
 
-      if (activityExist) {
-        throw new Error('Atividade já registrada.')
-      }
-
-      const activity = this.activityRepository.create(createActivityDto);
-
-      await this.activityRepository.save(activity);
-      
-    } catch (error: unknown) {
-      console.error('Falha com a conexão: ', error);
+    if (activityExist) {
+      throw new Error('Atividade já registrada.')
     }
+
+    const activity = this.activityRepository.create(createActivityDto);
+
+    if (user) {
+      activity.user = user;
+    }
+
+    return await this.activityRepository.save(activity);
   }
 
   async findAll() {

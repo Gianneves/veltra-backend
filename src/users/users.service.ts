@@ -4,12 +4,17 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { User } from './entities/user.entity';
 import { Repository } from 'typeorm';
+import { StravaService } from 'src/strava/strava.service';
+import { ActivitiesService } from 'src/activities/activities.service';
+import { CreateActivityDto } from 'src/activities/dto/create-activity.dto';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User)
-    private readonly userRepository: Repository<User>
+    private readonly userRepository: Repository<User>,
+    private readonly stravaService: StravaService,
+    private readonly activityService: ActivitiesService,
   ) {}
 
   async createOrUpdate(createUserDto: CreateUserDto) {
@@ -35,6 +40,33 @@ export class UsersService {
           refreshToken: createUserDto.refreshToken,
           expiresAt: expiresDate
         });
+
+      user = await this.userRepository.save(user);
+
+      const activities = await this.stravaService.fetchAllActivities(user.accessToken);
+
+      if (activities.length > 0) {
+        for (const act of activities) {
+          const createActivityDto: CreateActivityDto = {
+            activityStravaId: act.id,
+            elapsed_time: act.elapsed_time,
+            moving_time: act.moving_time,
+            name: act.name,
+            type: act.type,
+            sport_type: act.sport_type,
+            distance: act.distance,
+            max_speed: act.max_speed,
+            total_elevation_gain: act.total_elevation_gain,
+            average_cadence: act.average_cadence,
+            average_speed: act.average_speed,
+            average_heartrate: act.average_heartrate ?? undefined,
+            max_heartrate: act.max_heartrate ?? undefined,
+            max_watts: act.max_watts ?? undefined,
+          };
+
+          await this.activityService.create(createActivityDto, user);
+        }
+      }
     }
 
     return await this.userRepository.save(user);
