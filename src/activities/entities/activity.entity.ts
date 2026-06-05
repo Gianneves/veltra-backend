@@ -11,7 +11,7 @@ export class Activity {
 
     @IsNumber()
     @IsNotEmpty()
-    @Column({ unique: true })
+    @Column({ type: 'bigint', unique: true })
     activityStravaId!: number;
 
     @IsNumber()
