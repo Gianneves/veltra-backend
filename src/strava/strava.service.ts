@@ -38,7 +38,7 @@ export class StravaService {
             while (keepFetching) {
                 try {
                     const response = await fetch(
-                        `https://strava.com{page}&per_page=${perPage}`,
+                        `https://www.strava.com/api/v3/athlete/activities?page=${page}&per_page=${perPage}`,
                         {
                             method: 'GET',
                             headers: {
