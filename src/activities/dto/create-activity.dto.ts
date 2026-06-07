@@ -31,19 +31,19 @@ export class CreateActivityDto {
 
     @IsNumber()
     @IsNotEmpty()
-    max_speed!: number;
+    max_speed?: number;
 
     @IsNumber()
     @IsNotEmpty()
-    total_elevation_gain!: number;
+    total_elevation_gain?: number;
 
     @IsNumber()
     @IsNotEmpty()
-    average_cadence!: number;
+    average_cadence?: number;
 
     @IsNumber()
     @IsNotEmpty()
-    average_speed!: number;
+    average_speed?: number;
 
     @IsNumber()
     average_heartrate?: number;
