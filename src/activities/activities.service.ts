@@ -41,10 +41,6 @@ export class ActivitiesService {
   async findOne(id: number) {
       const activity = await this.activityRepository.findOneBy({ activityStravaId: id });
 
-      if (!activity) {
-        throw new Error('Atividade não encontrada');
-      }
-
       return activity;
   }
 

@@ -40,31 +40,31 @@ export class Activity {
 
     @IsNumber()
     @Column({ type: 'double precision' })
-    max_speed!: number;
+    max_speed?: number;
 
     @IsNumber()
     @Column({ type: 'double precision' })
-    total_elevation_gain!: number;
+    total_elevation_gain?: number;
 
     @IsNumber()
     @Column({ type: 'double precision' })
-    average_cadence!: number;
+    average_cadence?: number;
 
     @IsNumber()
     @Column({ type: 'double precision' })
-    average_speed!: number;
+    average_speed?: number;
 
     @IsNumber()
     @Column()
-    average_heartrate!: number;
+    average_heartrate?: number;
 
     @IsNumber()
     @Column()
-    max_heartrate!: number;
+    max_heartrate?: number;
 
     @IsNumber()
     @Column()
-    max_watts!: number;
+    max_watts?: number;
 
     @Column({ type: 'vector', length: 1563, nullable: true })
     embedding?: string;
