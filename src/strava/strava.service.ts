@@ -27,9 +27,8 @@ export class StravaService {
         return response.data;
     }
 
-    async fetchAllActivities(code: string) {
+    async fetchAllActivities(accessToken: string) {
         try {
-
             const allRunningActivities: any = [];
             let page = 1;
             const perPage = 200;
@@ -42,7 +41,7 @@ export class StravaService {
                         {
                             method: 'GET',
                             headers: {
-                                'Authorization': `Bearer ${code}`,
+                                'Authorization': `Bearer ${accessToken}`,
                                 'Content-Type': 'application/json'
                             }
                         }
@@ -79,6 +78,7 @@ export class StravaService {
             return allRunningActivities;
         } catch (error: unknown) {
             console.error(`Falha ao buscar atividades: ${error}`);
+            return [];
         }
     }
 
