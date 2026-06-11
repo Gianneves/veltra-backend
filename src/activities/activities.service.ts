@@ -16,7 +16,7 @@ export class ActivitiesService {
     private readonly aiService: AiService,
   ) {}
 
-  async create(createActivityDto: CreateActivityDto, user?: User) {
+  async create(createActivityDto: CreateActivityDto, user?: User, generateAI = true) {
     const activityExist = await this.findOne(createActivityDto.activityStravaId);
 
     if (activityExist) {
@@ -31,9 +31,11 @@ export class ActivitiesService {
 
     const savedActivity = await this.activityRepository.save(activity);
 
-    this.generateInsightAndEmbedding(savedActivity).catch((err) =>
-      console.error('Erro ao gerar insight/embedding:', err.message),
-    );
+    if (generateAI) {
+      this.generateInsightAndEmbedding(savedActivity).catch((err) =>
+        console.error('Erro ao gerar insight/embedding:', err.message),
+      );
+    }
 
     return savedActivity;
   }

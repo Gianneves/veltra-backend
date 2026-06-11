@@ -26,47 +26,51 @@ export class UsersService {
       where: { stravaId: createUserDto.stravaId }
     });
 
+    const expiresDate = new Date(createUserDto.expiresAt * 1000);
+    const isNewUser = !user;
+
     if (user) {
       user.name = createUserDto.name;
+      user.accessToken = createUserDto.accessToken;
       user.refreshToken = createUserDto.refreshToken;
+      user.expiresAt = expiresDate;
     } else {
-
-      const expiresDate = new Date(createUserDto.expiresAt * 1000);
-
       user = this.userRepository.create({
-          name: createUserDto.name,
-          stravaId: createUserDto.stravaId,
-          accessToken: createUserDto.accessToken,
-          refreshToken: createUserDto.refreshToken,
-          expiresAt: expiresDate
-        });
+        name: createUserDto.name,
+        stravaId: createUserDto.stravaId,
+        accessToken: createUserDto.accessToken,
+        refreshToken: createUserDto.refreshToken,
+        expiresAt: expiresDate,
+      });
 
       user = await this.userRepository.save(user);
 
       const activities = await this.stravaService.fetchAllActivities(user.accessToken);
 
-      if (activities.length > 0) {
-        for (const act of activities) {
-          const createActivityDto: CreateActivityDto = {
-            activityStravaId: act.id,
-            elapsed_time: act.elapsed_time,
-            moving_time: act.moving_time,
-            name: act.name,
-            type: act.type,
-            sport_type: act.sport_type,
-            distance: act.distance,
-            max_speed: act.max_speed,
-            total_elevation_gain: act.total_elevation_gain,
-            average_cadence: act.average_cadence,
-            average_speed: act.average_speed,
-            average_heartrate: act.average_heartrate ?? undefined,
-            max_heartrate: act.max_heartrate ?? undefined,
-            max_watts: act.max_watts ?? undefined,
-          };
+      for (const act of activities) {
+        const createActivityDto: CreateActivityDto = {
+          activityStravaId: act.id,
+          elapsed_time: act.elapsed_time,
+          moving_time: act.moving_time,
+          name: act.name,
+          type: act.type,
+          sport_type: act.sport_type,
+          distance: act.distance,
+          max_speed: act.max_speed,
+          total_elevation_gain: act.total_elevation_gain,
+          average_cadence: act.average_cadence,
+          average_speed: act.average_speed,
+          average_heartrate: act.average_heartrate ?? undefined,
+          max_heartrate: act.max_heartrate ?? undefined,
+          max_watts: act.max_watts ?? undefined,
+        };
 
-          await this.activityService.create(createActivityDto, user);
-        }
+        await this.activityService.create(createActivityDto, user, false);
       }
+    }
+
+    if (isNewUser) {
+      return user;
     }
 
     return await this.userRepository.save(user);
