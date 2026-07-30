@@ -10,6 +10,10 @@ import { StravaModule } from './strava/strava.module';
 import { ActivitiesModule } from './activities/activities.module';
 import { InsightsModule } from './insights/insights.module';
 import { AiModule } from './ai/ai.module';
+import { GoalsModule } from './goals/goals.module';
+import { TrainingPlansModule } from './training-plans/training-plans.module';
+import { CoachModule } from './coach/coach.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 
 @Module({
@@ -41,7 +45,11 @@ import { AiModule } from './ai/ai.module';
     StravaModule,
     ActivitiesModule,
     InsightsModule,
-    AiModule],
+    AiModule,
+    GoalsModule,
+    TrainingPlansModule,
+    CoachModule,
+    AnalyticsModule],
   controllers: [],
   providers: [
     {
