@@ -1,5 +1,5 @@
-import { Controller, Get, Query, Res } from '@nestjs/common';
-import type { Response } from 'express';
+import { Controller, Get, Post, Query, Req, Res, UnauthorizedException } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 
 @Controller('auth')
@@ -28,9 +28,38 @@ export class AuthController {
             maxAge: sessionTtl * 1000
         });
 
-        return res.status(200).json({
-            success: true,
-            message: 'Autenticado com sucesso!'
+        const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3000';
+        return res.redirect(`${frontendUrl}/dashboard`);
+    }
+
+    @Get('me')
+    async getMe(@Req() req: Request) {
+        const sessionId = req.cookies?.user_session;
+        if (!sessionId) {
+            throw new UnauthorizedException('Não autenticado');
+        }
+
+        const user = await this.authService.getMe(sessionId);
+        if (!user) {
+            throw new UnauthorizedException('Sessão inválida ou expirada');
+        }
+
+        return user;
+    }
+
+    @Post('logout')
+    async logout(@Req() req: Request, @Res() res: Response) {
+        const sessionId = req.cookies?.user_session;
+        if (sessionId) {
+            await this.authService.logout(sessionId);
+        }
+
+        res.clearCookie('user_session', {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         });
+
+        return res.status(200).json({ success: true });
     }
 }
