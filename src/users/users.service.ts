@@ -80,8 +80,11 @@ export class UsersService {
     return `This action returns all users`;
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} user`;
+  async findById(id: string) {
+    return this.userRepository.findOne({
+      where: { id },
+      select: ['id', 'name', 'stravaId', 'createdAt', 'updatedAt'],
+    });
   }
 
   update(id: number, updateUserDto: UpdateUserDto) {

@@ -1,3 +1,4 @@
+
 import { Injectable } from '@nestjs/common';
 import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai";
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';

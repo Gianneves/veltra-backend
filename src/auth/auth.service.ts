@@ -9,7 +9,7 @@ export class AuthService {
     constructor(
         private readonly stravaService: StravaService,
         private readonly redisService: RedisService,
-        private readonly userService: UsersService
+        private readonly userService: UsersService,
     ) {}
 
     generateStravaAuthUrl() {
@@ -53,5 +53,19 @@ export class AuthService {
             sessionId,
             sessionTtl
         }
+    }
+
+    async getMe(sessionId: string) {
+        const sessionKey = `app:session:${sessionId}`;
+        const userId = await this.redisService.get(sessionKey);
+
+        if (!userId) return null;
+
+        return this.userService.findById(userId);
+    }
+
+    async logout(sessionId: string) {
+        const sessionKey = `app:session:${sessionId}`;
+        await this.redisService.del(sessionKey);
     }
 }
