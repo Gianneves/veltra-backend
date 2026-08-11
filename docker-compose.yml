@@ -3,6 +3,8 @@ services:
     image: ankane/pgvector:latest
     container_name: veltra_db
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
