@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Body, Param, Req } from '@nestjs/common';
+import { Controller, Get, Post, Put, Body, Param, Req, Delete } from '@nestjs/common';
 import type { Request } from 'express';
 import { GoalsService } from './goals.service';
 import { CreateGoalDto } from './dto/create-goal.dto';
@@ -38,5 +38,12 @@ export class GoalsController {
   ) {
     const userId = await this.sessionService.resolveUserId(req);
     return this.goalsService.update(id, userId, updateGoalDto);
+  }
+
+  @Delete(':id')
+  async delete(@Param('id') id: string, @Req() req: Request) {
+    const userId = await this.sessionService.resolveUserId(req);
+
+    return this.goalsService.delete(id, userId);
   }
 }
