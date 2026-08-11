@@ -8,9 +8,13 @@ import { StravaModule } from 'src/strava/strava.module';
 import { ActivitiesModule } from 'src/activities/activities.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User, Activity]), StravaModule, ActivitiesModule],
+  imports: [
+    TypeOrmModule.forFeature([User, Activity]),
+    StravaModule,
+    ActivitiesModule,
+  ],
   controllers: [UsersController],
   providers: [UsersService],
-  exports: [UsersService]
+  exports: [UsersService],
 })
 export class UsersModule {}

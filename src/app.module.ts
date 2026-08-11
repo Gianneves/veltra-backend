@@ -15,7 +15,6 @@ import { TrainingPlansModule } from './training-plans/training-plans.module';
 import { CoachModule } from './coach/coach.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 
-
 @Module({
   imports: [
     ThrottlerModule.forRoot([
@@ -23,7 +22,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
         ttl: 6000,
         limit: 60,
         blockDuration: 5000,
-      }
+      },
     ]),
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forRootAsync({
@@ -49,7 +48,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
     GoalsModule,
     TrainingPlansModule,
     CoachModule,
-    AnalyticsModule],
+    AnalyticsModule,
+  ],
   controllers: [],
   providers: [
     {
@@ -58,4 +58,4 @@ import { AnalyticsModule } from './analytics/analytics.module';
     },
   ],
 })
-export class AppModule { }
+export class AppModule {}

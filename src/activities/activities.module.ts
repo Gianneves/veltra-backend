@@ -8,9 +8,13 @@ import { InsightsModule } from 'src/insights/insights.module';
 import { AiModule } from 'src/ai/ai.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Activity, Insight]), InsightsModule, AiModule],
+  imports: [
+    TypeOrmModule.forFeature([Activity, Insight]),
+    InsightsModule,
+    AiModule,
+  ],
   controllers: [ActivitiesController],
   providers: [ActivitiesService],
-  exports: [ActivitiesService]
+  exports: [ActivitiesService],
 })
 export class ActivitiesModule {}
