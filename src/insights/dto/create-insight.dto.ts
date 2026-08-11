@@ -1,11 +1,11 @@
-import { IsNotEmpty, IsString } from "class-validator";
+import { IsNotEmpty, IsString } from 'class-validator';
 
 export class CreateInsightDto {
-    @IsString()
-    @IsNotEmpty()
-    activityId!: string;
+  @IsString()
+  @IsNotEmpty()
+  activityId!: string;
 
-    @IsString()
-    @IsNotEmpty()
-    content!: string;
+  @IsString()
+  @IsNotEmpty()
+  content!: string;
 }

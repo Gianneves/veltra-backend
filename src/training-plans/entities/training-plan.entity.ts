@@ -1,29 +1,42 @@
-import { BeforeInsert, Column, CreateDateColumn, Entity, OneToMany, PrimaryColumn, UpdateDateColumn } from 'typeorm';
+import {
+  BeforeInsert,
+  Column,
+  CreateDateColumn,
+  Entity,
+  OneToMany,
+  PrimaryColumn,
+  UpdateDateColumn,
+} from 'typeorm';
 import { TrainingSession } from './training-session.entity';
 import { v7 as uuidv7 } from 'uuid';
 
 @Entity('training_plans')
 export class TrainingPlan {
-    @PrimaryColumn('uuid')
-    id!: string;
+  @PrimaryColumn('uuid')
+  id!: string;
 
-    @Column('uuid')
-    userId!: string;
+  @Column('uuid')
+  userId!: string;
 
-    @Column()
-    weekStart!: string;
+  @Column()
+  weekStart!: string;
 
-    @OneToMany(() => TrainingSession, (session) => session.plan, { cascade: true })
-    sessions!: TrainingSession[];
+  @Column('uuid', { nullable: true })
+  goalId?: string;
 
-    @CreateDateColumn()
-    createdAt?: Date;
+  @OneToMany(() => TrainingSession, (session) => session.plan, {
+    cascade: true,
+  })
+  sessions!: TrainingSession[];
 
-    @UpdateDateColumn()
-    updatedAt?: Date;
+  @CreateDateColumn()
+  createdAt?: Date;
 
-    @BeforeInsert()
-    generateId() {
-        this.id = uuidv7();
-    }
+  @UpdateDateColumn()
+  updatedAt?: Date;
+
+  @BeforeInsert()
+  generateId() {
+    this.id = uuidv7();
+  }
 }

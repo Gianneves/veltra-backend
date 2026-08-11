@@ -23,7 +23,7 @@ export class UsersService {
     }
 
     let user = await this.userRepository.findOne({
-      where: { stravaId: createUserDto.stravaId }
+      where: { stravaId: createUserDto.stravaId },
     });
 
     const expiresDate = new Date(createUserDto.expiresAt * 1000);
@@ -44,29 +44,32 @@ export class UsersService {
       });
 
       user = await this.userRepository.save(user);
+    }
 
-      const activities = await this.stravaService.fetchAllActivities(user.accessToken);
+    const activities = await this.stravaService.fetchAllActivities(
+      user.accessToken,
+    );
 
-      for (const act of activities) {
-        const createActivityDto: CreateActivityDto = {
-          activityStravaId: act.id,
-          elapsed_time: act.elapsed_time,
-          moving_time: act.moving_time,
-          name: act.name,
-          type: act.type,
-          sport_type: act.sport_type,
-          distance: act.distance,
-          max_speed: act.max_speed,
-          total_elevation_gain: act.total_elevation_gain,
-          average_cadence: act.average_cadence,
-          average_speed: act.average_speed,
-          average_heartrate: act.average_heartrate ?? undefined,
-          max_heartrate: act.max_heartrate ?? undefined,
-          max_watts: act.max_watts ?? undefined,
-        };
+    for (const act of activities) {
+      const createActivityDto: CreateActivityDto = {
+        activityStravaId: act.id,
+        elapsed_time: act.elapsed_time,
+        moving_time: act.moving_time,
+        name: act.name,
+        type: act.type,
+        sport_type: act.sport_type,
+        distance: act.distance,
+        max_speed: act.max_speed ?? undefined,
+        total_elevation_gain: act.total_elevation_gain ?? undefined,
+        average_cadence: act.average_cadence ?? undefined,
+        average_speed: act.average_speed ?? undefined,
+        startDate: act.start_date ?? undefined,
+        average_heartrate: act.average_heartrate ?? undefined,
+        max_heartrate: act.max_heartrate ?? undefined,
+        max_watts: act.max_watts ?? undefined,
+      };
 
-        await this.activityService.create(createActivityDto, user, false);
-      }
+      await this.activityService.upsert(createActivityDto, user);
     }
 
     if (isNewUser) {

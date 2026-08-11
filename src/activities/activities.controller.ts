@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query } from '@nestjs/common';
 import { ActivitiesService } from './activities.service';
 import { CreateActivityDto } from './dto/create-activity.dto';
 
@@ -12,13 +12,27 @@ export class ActivitiesController {
   }
 
   @Get()
-  findAll() {
-    return this.activitiesService.findAll();
+  findAll(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('period') period?: string,
+    @Query('year') year?: string,
+  ) {
+    return this.activitiesService.findAll(
+      page ? +page : 1,
+      limit ? +limit : 20,
+      period,
+      year,
+    );
+  }
+
+  @Get('years')
+  findYears() {
+    return this.activitiesService.findYears();
   }
 
   @Get(':id')
   findOne(@Param('id') id: string) {
-    return this.activitiesService.findOne(+id);
+    return this.activitiesService.findOne(id);
   }
-
 }

@@ -1,39 +1,51 @@
-import { BeforeInsert, Column, Entity, JoinColumn, ManyToOne, PrimaryColumn } from 'typeorm';
+import {
+  BeforeInsert,
+  Column,
+  Entity,
+  JoinColumn,
+  ManyToOne,
+  PrimaryColumn,
+} from 'typeorm';
 import { TrainingPlan } from './training-plan.entity';
 import { v7 as uuidv7 } from 'uuid';
 
 @Entity('training_sessions')
 export class TrainingSession {
-    @PrimaryColumn('uuid')
-    id!: string;
+  @PrimaryColumn('uuid')
+  id!: string;
 
-    @Column('uuid')
-    planId!: string;
+  @Column('uuid')
+  planId!: string;
 
-    @Column()
-    day!: string;
+  @Column()
+  day!: string;
 
-    @Column()
-    type!: string;
+  @Column('int', { default: 0 })
+  dayOrder!: number;
 
-    @Column({ type: 'double precision' })
-    plannedDistance!: number;
+  @Column()
+  type!: string;
 
-    @Column({ type: 'double precision' })
-    plannedPace!: number;
+  @Column({ type: 'double precision' })
+  plannedDistance!: number;
 
-    @Column({ nullable: true })
-    notes?: string;
+  @Column({ type: 'double precision' })
+  plannedPace!: number;
 
-    @Column({ default: false })
-    completed!: boolean;
+  @Column({ nullable: true })
+  notes?: string;
 
-    @ManyToOne(() => TrainingPlan, (plan) => plan.sessions, { onDelete: 'CASCADE' })
-    @JoinColumn({ name: 'planId' })
-    plan!: TrainingPlan;
+  @Column({ default: false })
+  completed!: boolean;
 
-    @BeforeInsert()
-    generateId() {
-        this.id = uuidv7();
-    }
+  @ManyToOne(() => TrainingPlan, (plan) => plan.sessions, {
+    onDelete: 'CASCADE',
+  })
+  @JoinColumn({ name: 'planId' })
+  plan!: TrainingPlan;
+
+  @BeforeInsert()
+  generateId() {
+    this.id = uuidv7();
+  }
 }

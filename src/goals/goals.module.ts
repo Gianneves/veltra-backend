@@ -4,12 +4,17 @@ import { GoalsService } from './goals.service';
 import { GoalsController } from './goals.controller';
 import { Goal } from './entities/goal.entity';
 import { Milestone } from './entities/milestone.entity';
-import { RedisModule } from 'src/redis/redis.module';
+import { AuthModule } from 'src/auth/auth.module';
+import { TrainingPlansModule } from 'src/training-plans/training-plans.module';
 
 @Module({
-    imports: [TypeOrmModule.forFeature([Goal, Milestone]), RedisModule],
-    controllers: [GoalsController],
-    providers: [GoalsService],
-    exports: [GoalsService],
+  imports: [
+    TypeOrmModule.forFeature([Goal, Milestone]),
+    AuthModule,
+    TrainingPlansModule,
+  ],
+  controllers: [GoalsController],
+  providers: [GoalsService],
+  exports: [GoalsService],
 })
 export class GoalsModule {}

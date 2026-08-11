@@ -10,6 +10,6 @@ import { AiModule } from 'src/ai/ai.module';
   imports: [TypeOrmModule.forFeature([Insight, Activity]), AiModule],
   providers: [InsightsService],
   controllers: [InsightsController],
-  exports: [InsightsService]
+  exports: [InsightsService],
 })
 export class InsightsModule {}

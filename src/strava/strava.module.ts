@@ -3,6 +3,6 @@ import { StravaService } from './strava.service';
 
 @Module({
   providers: [StravaService],
-  exports: [StravaService]
+  exports: [StravaService],
 })
 export class StravaModule {}
