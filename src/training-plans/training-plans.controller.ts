@@ -1,4 +1,13 @@
-import { Controller, Get, Put, Body, Param, Query, Req } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Body,
+  Param,
+  Query,
+  Req,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import { TrainingPlansService } from './training-plans.service';
 import { AuthSessionService } from 'src/auth/auth-session.service';
@@ -26,6 +35,28 @@ export class TrainingPlansController {
   async findByWeek(@Query('weekStart') weekStart: string, @Req() req: Request) {
     const userId = await this.sessionService.resolveUserId(req);
     return this.trainingPlansService.findByWeek(userId, weekStart);
+  }
+
+  @Post('regenerate')
+  async regenerate(@Req() req: Request) {
+    const userId = await this.sessionService.resolveUserId(req);
+    return this.trainingPlansService.regenerateForUser(userId);
+  }
+
+  @Put(':planId/sessions/:sessionId/activity')
+  async linkActivity(
+    @Param('planId') planId: string,
+    @Param('sessionId') sessionId: string,
+    @Body() body: { activityId: string | null },
+    @Req() req: Request,
+  ) {
+    const userId = await this.sessionService.resolveUserId(req);
+    return this.trainingPlansService.linkSessionActivity(
+      userId,
+      planId,
+      sessionId,
+      body?.activityId ?? null,
+    );
   }
 
   @Put(':planId/sessions/:sessionId')

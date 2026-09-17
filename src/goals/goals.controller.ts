@@ -1,4 +1,13 @@
-import { Controller, Get, Post, Put, Body, Param, Req, Delete } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Body,
+  Param,
+  Req,
+  Delete,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import { GoalsService } from './goals.service';
 import { CreateGoalDto } from './dto/create-goal.dto';

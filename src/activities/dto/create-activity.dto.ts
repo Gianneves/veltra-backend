@@ -51,6 +51,17 @@ export class CreateActivityDto {
   @IsOptional()
   startDate?: Date;
 
+  @IsDate()
+  @IsOptional()
+  startDateLocal?: Date;
+
+  @IsString()
+  @IsOptional()
+  timezone?: string;
+
+  @IsOptional()
+  laps?: unknown[];
+
   @IsNumber()
   average_heartrate?: number;
 
