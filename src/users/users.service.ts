@@ -90,6 +90,33 @@ export class UsersService {
     });
   }
 
+  async findByStravaId(stravaId: number) {
+    return this.userRepository.findOne({ where: { stravaId } });
+  }
+
+  async findFullById(id: string) {
+    return this.userRepository.findOne({ where: { id } });
+  }
+
+  async updateStravaTokens(
+    userId: string,
+    tokens: { accessToken: string; refreshToken: string; expiresAt: number },
+  ) {
+    await this.userRepository.update(userId, {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresAt: new Date(tokens.expiresAt * 1000),
+    });
+  }
+
+  async clearStravaTokens(userId: string) {
+    await this.userRepository.update(userId, {
+      accessToken: '',
+      refreshToken: '',
+      expiresAt: new Date(0),
+    });
+  }
+
   update(id: number, updateUserDto: UpdateUserDto) {
     return `This action updates a #${id} user`;
   }

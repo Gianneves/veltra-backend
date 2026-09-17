@@ -6,6 +6,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { User } from 'src/users/entities/user.entity';
 import { InsightsService } from 'src/insights/insights.service';
 import { AiService } from 'src/ai/ai.service';
+import type { StravaLap } from 'src/utils/types';
 
 @Injectable()
 export class ActivitiesService {
@@ -29,7 +30,12 @@ export class ActivitiesService {
       throw new Error('Atividade já registrada.');
     }
 
-    const activity = this.activityRepository.create(createActivityDto);
+    const activity = this.activityRepository.create({
+      ...createActivityDto,
+      start_date: createActivityDto.startDate,
+      start_date_local: createActivityDto.startDateLocal,
+      laps: createActivityDto.laps as StravaLap[] | undefined,
+    });
 
     if (user) {
       activity.user = user;
@@ -164,6 +170,9 @@ Max Watts: ${format(activity.max_watts, ' W')}
       existing.average_cadence = createActivityDto.average_cadence;
       existing.average_speed = createActivityDto.average_speed;
       existing.start_date = createActivityDto.startDate;
+      existing.start_date_local = createActivityDto.startDateLocal;
+      existing.timezone = createActivityDto.timezone;
+      existing.laps = createActivityDto.laps as StravaLap[] | undefined;
       existing.average_heartrate = createActivityDto.average_heartrate;
       existing.max_heartrate = createActivityDto.max_heartrate;
       existing.max_watts = createActivityDto.max_watts;
@@ -172,5 +181,13 @@ Max Watts: ${format(activity.max_watts, ' W')}
     }
 
     return this.create(createActivityDto, user, false);
+  }
+
+  async findByStravaId(activityStravaId: number) {
+    return this.activityRepository.findOneBy({ activityStravaId });
+  }
+
+  async remove(activity: Activity) {
+    await this.activityRepository.remove(activity);
   }
 }

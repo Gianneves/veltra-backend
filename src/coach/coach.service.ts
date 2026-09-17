@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { FindOptionsOrder, Repository } from 'typeorm';
 import { CoachConversation } from './entities/coach-conversation.entity';
 import { CoachMessage } from './entities/coach-message.entity';
 import { Goal } from 'src/goals/entities/goal.entity';
@@ -26,7 +26,9 @@ export class CoachService {
       const conv = await this.conversationRepository.findOne({
         where: { id: conversationId, userId },
         relations: ['messages'],
-        order: { messages: { createdAt: 'ASC' } as any },
+        order: {
+          messages: { createdAt: 'ASC' },
+        } as unknown as FindOptionsOrder<CoachConversation>,
       });
       if (conv) return conv;
     }
@@ -94,7 +96,9 @@ export class CoachService {
       const currentPlan = await this.planRepository.findOne({
         where: { userId, weekStart: weekStart.toISOString() },
         relations: ['sessions'],
-        order: { sessions: { dayOrder: 'ASC' } as any },
+        order: {
+          sessions: { dayOrder: 'ASC' },
+        } as unknown as FindOptionsOrder<TrainingPlan>,
       });
 
       const level =
@@ -124,6 +128,18 @@ export class CoachService {
           timeStr = ` em ${Math.floor(activeGoal.longestRunTime / 60)}min`;
         }
         contextBlock += `\n- Maior distância já corrida: ${distKm}km${timeStr}`;
+      }
+
+      if (activeGoal.targetTime) {
+        const total = Math.round(activeGoal.targetTime);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        const timeStr =
+          h > 0
+            ? `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+            : `${m}:${s.toString().padStart(2, '0')}`;
+        contextBlock += `\n- Tempo alvo da prova: ${timeStr}`;
       }
 
       if (currentPlan?.sessions) {

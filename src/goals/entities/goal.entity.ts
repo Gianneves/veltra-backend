@@ -27,6 +27,9 @@ export class Goal {
   @Column()
   targetDate!: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  startDate?: string | null;
+
   @Column()
   discipline!: string;
 
@@ -47,6 +50,9 @@ export class Goal {
 
   @Column('int', { default: 0 })
   threeKmTime!: number;
+
+  @Column('int', { nullable: true })
+  targetTime?: number | null;
 
   @Column({ type: 'double precision', nullable: true })
   longestRunDistance?: number;

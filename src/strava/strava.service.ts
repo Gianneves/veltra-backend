@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import { Activity, StravaAuthResponse } from 'src/utils/types';
 
+const STRAVA_API = 'https://www.strava.com/api/v3';
+
 @Injectable()
 export class StravaService {
   async exchangeCodeForTokens(code: string): Promise<StravaAuthResponse> {
@@ -30,6 +32,61 @@ export class StravaService {
     );
 
     return response.data;
+  }
+
+  async fetchActivityById(
+    activityId: number,
+    accessToken: string,
+  ): Promise<Activity | null> {
+    try {
+      const response = await axios.get<Activity>(
+        `${STRAVA_API}/activities/${activityId}`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      );
+
+      return response.data;
+    } catch (error: unknown) {
+      const status = axios.isAxiosError(error) ? error.response?.status : null;
+      if (status === 404) return null;
+      throw error;
+    }
+  }
+
+  async subscribePush(callbackUrl: string, verifyToken: string) {
+    const response = await axios.post(`${STRAVA_API}/push_subscriptions`, {
+      client_id: process.env.STRAVA_CLIENT_ID,
+      client_secret: process.env.STRAVA_CLIENT_SECRET,
+      callback_url: callbackUrl,
+      verify_token: verifyToken,
+    });
+
+    return response.data as { id: number };
+  }
+
+  async listPushSubscriptions() {
+    const response = await axios.get(`${STRAVA_API}/push_subscriptions`, {
+      params: {
+        client_id: process.env.STRAVA_CLIENT_ID,
+        client_secret: process.env.STRAVA_CLIENT_SECRET,
+      },
+    });
+
+    return response.data as {
+      id: number;
+      callback_url: string;
+      created_at: string;
+    }[];
+  }
+
+  async deletePushSubscription(id: number) {
+    await axios.delete(`${STRAVA_API}/push_subscriptions/${id}`, {
+      params: {
+        client_id: process.env.STRAVA_CLIENT_ID,
+        client_secret: process.env.STRAVA_CLIENT_SECRET,
+      },
+    });
   }
 
   async fetchAllActivities(accessToken: string) {

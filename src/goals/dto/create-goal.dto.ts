@@ -21,12 +21,21 @@ export class CreateGoalDto {
   targetDate!: string;
 
   @IsString()
+  @IsOptional()
+  startDate?: string | null;
+
+  @IsString()
   @IsNotEmpty()
   discipline!: string;
 
   @IsNumber()
   @Min(1)
   threeKmTime!: number;
+
+  @IsNumber()
+  @IsOptional()
+  @Min(1)
+  targetTime?: number | null;
 
   @IsNumber()
   @IsOptional()

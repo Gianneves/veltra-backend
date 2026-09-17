@@ -24,6 +24,12 @@ export class TrainingPlan {
   @Column('uuid', { nullable: true })
   goalId?: string;
 
+  @Column({ nullable: true })
+  focus?: string;
+
+  @Column({ type: 'text', nullable: true })
+  coachNotes?: string;
+
   @OneToMany(() => TrainingSession, (session) => session.plan, {
     cascade: true,
   })

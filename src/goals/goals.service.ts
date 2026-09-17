@@ -33,8 +33,11 @@ export class GoalsService {
   }
 
   async create(createGoalDto: CreateGoalDto, userId: string) {
+    const startDate = this.normalizeOptionalDate(createGoalDto.startDate);
+
     const goal = this.goalRepository.create({
       ...createGoalDto,
+      startDate,
       userId,
       targetDate: new Date(createGoalDto.targetDate).toISOString(),
       status: 'active',
@@ -65,7 +68,9 @@ export class GoalsService {
     savedGoal.milestones = await this.milestoneRepository.save(milestones);
 
     try {
-      await this.trainingPlansService.generateFromGoal(savedGoal);
+      await this.trainingPlansService.regenerateFromGoal(savedGoal, {
+        startDate: this.cycleStartDate(savedGoal),
+      });
     } catch (err) {
       console.error('Erro ao gerar plano de treino:', err);
     }
@@ -78,7 +83,29 @@ export class GoalsService {
     if (!goal) return null;
 
     Object.assign(goal, updateGoalDto);
-    return this.goalRepository.save(goal);
+    if ('startDate' in updateGoalDto) {
+      goal.startDate = this.normalizeOptionalDate(updateGoalDto.startDate);
+    }
+    const savedGoal = await this.goalRepository.save(goal);
+
+    try {
+      const currentWeek = this.getWeekStart(new Date());
+      const hasCompleted = await this.trainingPlansService.hasCompletedSessions(
+        userId,
+        currentWeek,
+      );
+      const startDate =
+        this.cycleStartDate(savedGoal) ??
+        (hasCompleted ? this.nextMonday() : new Date());
+
+      await this.trainingPlansService.regenerateFromGoal(savedGoal, {
+        startDate,
+      });
+    } catch (err) {
+      console.error('Erro ao regenerar plano de treino:', err);
+    }
+
+    return savedGoal;
   }
 
   async delete(id: string, userId: string) {
@@ -88,6 +115,51 @@ export class GoalsService {
       throw new NotFoundException(`goal with id: ${id} not found`);
     }
 
+    try {
+      await this.trainingPlansService.deleteFuturePlansForGoal(
+        userId,
+        id,
+        new Date(),
+      );
+    } catch (err) {
+      console.error('Erro ao remover planos futuros da meta:', err);
+    }
+
     return { deleted: true, id };
+  }
+
+  private normalizeOptionalDate(value?: string | null): string | null {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString();
+  }
+
+  private cycleStartDate(goal: Goal): Date | undefined {
+    if (!goal.startDate) return undefined;
+
+    const date = new Date(goal.startDate);
+    if (Number.isNaN(date.getTime())) return undefined;
+
+    const currentWeek = this.getWeekStart(new Date());
+    if (date.getTime() < currentWeek.getTime()) return undefined;
+
+    return this.getWeekStart(date);
+  }
+
+  private getWeekStart(date: Date): Date {
+    const start = new Date(date);
+    start.setDate(date.getDate() - date.getDay());
+    start.setHours(0, 0, 0, 0);
+    return start;
+  }
+
+  private nextMonday(date: Date = new Date()): Date {
+    const next = new Date(date);
+    const day = next.getDay();
+    const daysToAdd = day === 0 ? 1 : 8 - day;
+    next.setDate(next.getDate() + daysToAdd);
+    next.setHours(0, 0, 0, 0);
+    return next;
   }
 }

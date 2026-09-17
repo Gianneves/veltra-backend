@@ -1,6 +1,7 @@
 import { IsNotEmpty, IsNumber, IsString } from 'class-validator';
 import { Insight } from 'src/insights/entities/insight.entity';
 import { User } from 'src/users/entities/user.entity';
+import type { StravaLap } from 'src/utils/types';
 import {
   BeforeInsert,
   Column,
@@ -64,6 +65,15 @@ export class Activity {
 
   @Column({ type: 'timestamp with time zone', nullable: true })
   start_date?: Date;
+
+  @Column({ type: 'timestamp with time zone', nullable: true })
+  start_date_local?: Date;
+
+  @Column({ nullable: true })
+  timezone?: string;
+
+  @Column('simple-json', { nullable: true })
+  laps?: StravaLap[] | null;
 
   @IsNumber()
   @Column({ nullable: true })

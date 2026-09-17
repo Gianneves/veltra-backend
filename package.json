@@ -17,7 +17,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "strava:subscribe": "ts-node -r tsconfig-paths/register scripts/strava-subscribe.ts"
   },
   "dependencies": {
     "@langchain/core": "^1.1.48",
@@ -78,6 +79,10 @@
     ],
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
+    "moduleNameMapper": {
+      "^src/(.*)$": "<rootDir>/$1",
+      "^uuid$": "<rootDir>/__mocks__/uuid.ts"
+    },
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
