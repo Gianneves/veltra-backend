@@ -1,15 +1,11 @@
 import type { Activity } from 'src/activities/entities/activity.entity';
-import {
-  closestReference,
-  predictRacePace,
-  type PaceReference,
-} from 'src/training-plans/race-target';
 
 export const RECORD_DISTANCES_KM = [3, 5, 10, 15, 21.0975, 42.195] as const;
 
 const MIN_PACE_SEC_PER_KM = 150;
 const MAX_PACE_SEC_PER_KM = 600;
 const PREDICTION_WINDOW_DAYS = 90;
+const RIEGEL_TIME_EXPONENT = 1.06;
 const CONSISTENCY_WEEKS_TARGET = 12;
 const CENTURY_KM_TARGET = 100;
 const MARATHON_KM = 42.195;
@@ -79,21 +75,14 @@ function toIso(date: Date | undefined): string | null {
   return date ? date.toISOString() : null;
 }
 
-function bestPaceInRange(
-  runs: Activity[],
-  minMeters: number,
-  maxMeters: number,
-): number | undefined {
-  let best: number | undefined;
+function buildRecentRuns(runs: Activity[], now: Date): Activity[] {
+  const since = new Date(now);
+  since.setDate(since.getDate() - PREDICTION_WINDOW_DAYS);
 
-  for (const run of runs) {
-    if (run.distance < minMeters || run.distance > maxMeters) continue;
-    const pace = paceOf(run);
-    if (pace === undefined) continue;
-    if (best === undefined || pace < best) best = pace;
-  }
-
-  return best;
+  return runs.filter((run) => {
+    const date = dateOf(run);
+    return date !== undefined && date >= since && paceOf(run) !== undefined;
+  });
 }
 
 export function buildBestEfforts(runs: Activity[]): BestEffort[] {
@@ -128,53 +117,40 @@ export function buildBestEfforts(runs: Activity[]): BestEffort[] {
   return efforts;
 }
 
-function buildRecentReferences(runs: Activity[], now: Date): PaceReference[] {
-  const since = new Date(now);
-  since.setDate(since.getDate() - PREDICTION_WINDOW_DAYS);
-
-  const recent = runs.filter((run) => {
-    const date = dateOf(run);
-    return date !== undefined && date >= since;
-  });
-
-  const references: PaceReference[] = [];
-
-  const shortPace = bestPaceInRange(recent, 3000, 5500);
-  if (shortPace !== undefined) references.push({ km: 4, pace: shortPace });
-
-  const mediumPace = bestPaceInRange(recent, 5500, 10500);
-  if (mediumPace !== undefined) references.push({ km: 7.5, pace: mediumPace });
-
-  const longPace = bestPaceInRange(recent, 10500, Infinity);
-  if (longPace !== undefined) references.push({ km: 12, pace: longPace });
-
-  return references;
-}
-
 export function buildPredictions(
   runs: Activity[],
   now: Date = new Date(),
 ): TimePrediction[] {
-  const references = buildRecentReferences(runs, now);
-  if (references.length === 0) return [];
+  const recent = buildRecentRuns(runs, now);
+  if (recent.length === 0) return [];
 
-  const predictions: TimePrediction[] = [];
+  return RECORD_DISTANCES_KM.flatMap((distanceKm) => {
+    let bestTime = 0;
+    let bestRun: Activity | undefined;
 
-  for (const distanceKm of RECORD_DISTANCES_KM) {
-    const pace = predictRacePace(references, distanceKm);
-    const reference = closestReference(references, distanceKm);
-    if (pace === undefined || reference === undefined) continue;
+    for (const run of recent) {
+      const runKm = run.distance / 1000;
+      const projected =
+        run.moving_time * Math.pow(distanceKm / runKm, RIEGEL_TIME_EXPONENT);
 
-    predictions.push({
-      distanceKm,
-      timeSeconds: pace * distanceKm,
-      paceSecondsPerKm: pace,
-      basedOnDistanceKm: reference.km,
-      basedOnTimeSeconds: reference.pace * reference.km,
-    });
-  }
+      if (!bestRun || projected < bestTime) {
+        bestTime = projected;
+        bestRun = run;
+      }
+    }
 
-  return predictions;
+    if (!bestRun) return [];
+
+    return [
+      {
+        distanceKm,
+        timeSeconds: bestTime,
+        paceSecondsPerKm: bestTime / distanceKm,
+        basedOnDistanceKm: Math.round((bestRun.distance / 1000) * 100) / 100,
+        basedOnTimeSeconds: bestRun.moving_time,
+      },
+    ];
+  });
 }
 
 function weekStart(date: Date): Date {

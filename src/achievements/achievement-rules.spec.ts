@@ -86,11 +86,35 @@ describe('achievement rules', () => {
       const tenKm = predictions.find(
         (prediction) => prediction.distanceKm === 10,
       );
-      expect(tenKm?.basedOnDistanceKm).toBe(4);
-      expect(tenKm?.timeSeconds).toBeCloseTo(
-        300 * Math.pow(10 / 4, 0.06) * 10,
-        5,
+      expect(tenKm?.basedOnDistanceKm).toBe(5);
+      expect(tenKm?.timeSeconds).toBeCloseTo(1500 * Math.pow(10 / 5, 1.06), 5);
+    });
+
+    it('keeps the predicted pace consistent across distances', () => {
+      const runs = [
+        run({
+          id: 'interval',
+          distance: 5410,
+          moving_time: 1976,
+          start_date: daysAfter(now, -5),
+        }),
+        run({
+          id: 'long',
+          distance: 16110,
+          moving_time: 5669,
+          start_date: daysAfter(now, -20),
+        }),
+      ];
+
+      const paces = buildPredictions(runs, now).map(
+        (prediction) => prediction.paceSecondsPerKm,
       );
+
+      expect(paces.length).toBeGreaterThan(1);
+
+      for (let i = 1; i < paces.length; i++) {
+        expect(paces[i]).toBeGreaterThanOrEqual(paces[i - 1] - 1e-9);
+      }
     });
 
     it('ignores runs older than the recent-form window', () => {
