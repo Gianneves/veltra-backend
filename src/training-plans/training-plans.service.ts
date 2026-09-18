@@ -14,9 +14,13 @@ import {
 import {
   PlanPhase,
   QualityWorkout,
+  WorkoutPreferences,
+  phaseWorkoutPool,
   resolvePhase,
   selectWeekWorkouts,
+  workoutsOfType,
 } from './workout-library';
+import type { QualityRunType, TrainingPattern } from './training-pattern';
 import {
   RaceTargetAssessment,
   assessRaceTarget,
@@ -141,6 +145,20 @@ export class TrainingPlansService {
     });
   }
 
+  async getPattern(userId: string) {
+    const goal = await this.goalRepository.findOne({
+      where: { userId, status: 'active' },
+      order: { createdAt: 'DESC' },
+    });
+
+    const profile = await this.athleteProfileService.build(
+      userId,
+      goal ?? undefined,
+    );
+
+    return profile.pattern;
+  }
+
   async linkSessionActivity(
     userId: string,
     planId: string,
@@ -225,6 +243,8 @@ export class TrainingPlansService {
     await this.deleteFuturePlansForUser(goal.userId, startWeek);
 
     const profile = await this.athleteProfileService.build(goal.userId, goal);
+    const pattern = profile.pattern;
+    const preferences = this.buildWorkoutPreferences(pattern);
     const raceKm = goal.targetDistance / 1000;
     const targetDate = new Date(goal.targetDate);
 
@@ -248,12 +268,17 @@ export class TrainingPlansService {
       totalWeeks,
     });
 
-    const runDays = this.resolveRunDays(goal);
-    const longRunDay = this.resolveLongRunDay(goal, runDays);
-    const qualityCount = this.qualitySessionsPerWeek(profile.level, runDays);
+    const runDays = this.resolveRunDays(goal, pattern);
+    const longRunDay = this.resolveLongRunDay(goal, runDays, pattern);
+    const qualityCount = this.qualitySessionsPerWeek(
+      profile.level,
+      runDays,
+      pattern,
+    );
     const fastStart =
       profile.hasData &&
       (profile.level === 'intermediate' || profile.level === 'advanced');
+    let patternNote: string | undefined;
 
     const plans: TrainingPlan[] = [];
     const summaries: WeekSummary[] = [];
@@ -270,24 +295,40 @@ export class TrainingPlansService {
       const weeklyKm = volume.weeklyKm[weekIndex];
       const longKm = volume.longKm[weekIndex];
 
-      const workouts = selectWeekWorkouts({
-        level: profile.level,
+      const workouts = this.fitWorkoutsToHistory(
+        selectWeekWorkouts({
+          level: profile.level,
+          phase,
+          phaseWeekIndex: phaseWeekIndexes[phase],
+          globalWeekIndex: weekIndex,
+          raceKm,
+          hasSecondaryDay: qualityCount >= 2,
+          deload: isDeload,
+          preferences,
+        }),
+        paces,
+        pattern,
+        profile.level,
         phase,
-        phaseWeekIndex: phaseWeekIndexes[phase],
-        globalWeekIndex: weekIndex,
-        raceKm,
-        hasSecondaryDay: qualityCount >= 2,
-        deload: isDeload,
-      });
+      );
       phaseWeekIndexes[phase] += 1;
 
       const layout = this.buildWeekLayout({
         runDays,
         longRunDay,
-        daysPerWeek: this.resolveDaysPerWeek(goal, runDays),
+        daysPerWeek: this.resolveDaysPerWeek(goal, runDays, pattern),
         weekIndex,
         qualityCount,
+        pattern,
       });
+
+      if (weekIndex === 0) {
+        patternNote = this.describeTrainingPattern(
+          pattern,
+          layout,
+          qualityCount,
+        );
+      }
 
       const weekStart = new Date(startWeek);
       weekStart.setDate(weekStart.getDate() + weekIndex * 7);
@@ -332,11 +373,15 @@ export class TrainingPlansService {
       });
     }
 
-    if (targetNote && plans.length > 0) {
+    const firstWeekNotes = [patternNote, targetNote]
+      .filter((part): part is string => !!part)
+      .join('\n\n');
+
+    if (firstWeekNotes && plans.length > 0) {
       await this.planRepository.update(plans[0].id, {
-        coachNotes: targetNote,
+        coachNotes: firstWeekNotes,
       });
-      plans[0].coachNotes = targetNote;
+      plans[0].coachNotes = firstWeekNotes;
     }
 
     this.enrichPlanWithAi(
@@ -347,6 +392,7 @@ export class TrainingPlansService {
       summaries,
       assessment,
       targetNote,
+      patternNote,
     ).catch((err) => console.error('Erro ao enriquecer plano com IA:', err));
 
     this.backfillRecentActivities(goal.userId, startWeek);
@@ -411,19 +457,25 @@ export class TrainingPlansService {
     const goalLongKm = goal.longestRunDistance
       ? goal.longestRunDistance / 1000
       : 0;
-    const currentLong = Math.max(profile.longestRunKm, goalLongKm);
+    const longCap = this.longRunCap(raceKm, profile.level);
+
+    const recentLong =
+      profile.longestRunKm > 0 ? profile.longestRunKm : goalLongKm;
+    const longFloor = Math.min(recentLong, longCap);
+    const weeklyForLong = (longKmValue: number) =>
+      longKmValue <= 0 ? 0 : longKmValue / 0.62;
+
     const peakCap =
       profile.peakWeeklyKm > 0
         ? profile.peakWeeklyKm * 1.05
         : Number.POSITIVE_INFINITY;
-    const impliedWeekly =
-      currentLong > 0 ? Math.min(currentLong / 0.45, peakCap) : 0;
-    const dataWeekly = Math.max(profile.recentWeeklyKm, impliedWeekly);
     const fallbackWeekly = Math.max(10, tablePeak * 0.5);
+    const recentWeekly =
+      profile.recentWeeklyKm > 0 ? profile.recentWeeklyKm : fallbackWeekly;
 
-    const baseline = dataWeekly > 0 ? dataWeekly : fallbackWeekly;
     const startWeekly = Math.min(
-      Math.max(baseline, fallbackWeekly * 0.7),
+      Math.max(recentWeekly, fallbackWeekly * 0.7, weeklyForLong(longFloor)),
+      peakCap,
       tablePeak * 1.6,
     );
     const targetPeak = Math.min(
@@ -431,21 +483,11 @@ export class TrainingPlansService {
       startWeekly * 1.5,
     );
 
-    const longCap = this.longRunCap(raceKm, profile.level);
-    const longFloor = Math.min(currentLong, longCap);
-    const weeklyForLong = (longKmValue: number) =>
-      longKmValue <= 0 ? 0 : longKmValue / 0.62;
-
-    const startWeeklyWithLong = Math.max(startWeekly, weeklyForLong(longFloor));
-
     const weeklyKm: number[] = [];
     const longKm: number[] = [];
 
-    let weekly = startWeeklyWithLong;
-    let long = Math.min(
-      Math.max(longFloor, startWeeklyWithLong * 0.28),
-      longCap,
-    );
+    let weekly = startWeekly;
+    let long = Math.min(Math.max(longFloor, startWeekly * 0.28), longCap);
 
     for (let i = 0; i < totalWeeks; i++) {
       const isTaper = i >= totalWeeks - 2;
@@ -707,6 +749,133 @@ export class TrainingPlansService {
     });
   }
 
+  private buildWorkoutPreferences(
+    pattern?: TrainingPattern,
+  ): WorkoutPreferences | undefined {
+    if (!pattern?.hasData) return undefined;
+
+    const qualityTypes = (
+      Object.keys(pattern.typicalQuality) as QualityRunType[]
+    ).filter((type) => !!pattern.typicalQuality[type]);
+    if (qualityTypes.length === 0) return undefined;
+
+    const ranked = [...qualityTypes].sort(
+      (a, b) => pattern.typeMix[b] - pattern.typeMix[a],
+    );
+
+    const typicalReps: WorkoutPreferences['typicalReps'] = {};
+    const typicalMainKm: WorkoutPreferences['typicalMainKm'] = {};
+
+    for (const type of qualityTypes) {
+      const typical = pattern.typicalQuality[type];
+      if (!typical) continue;
+
+      if (typical.reps.length > 0) typicalReps[type] = typical.reps;
+      typicalMainKm[type] = Math.max(1, typical.km - 3.5);
+    }
+
+    return {
+      primaryType: ranked[0],
+      secondaryType: ranked[1],
+      typicalReps,
+      typicalMainKm,
+    };
+  }
+
+  private fitWorkoutsToHistory(
+    workouts: { primary: QualityWorkout; secondary?: QualityWorkout },
+    paces: PaceSet,
+    pattern: TrainingPattern | undefined,
+    level: AthleteLevel,
+    phase: PlanPhase,
+  ): { primary: QualityWorkout; secondary?: QualityWorkout } {
+    const fit = (workout?: QualityWorkout): QualityWorkout | undefined => {
+      if (!workout || workout.key.startsWith('race-specific')) return workout;
+
+      const typical = pattern?.typicalQuality[workout.type];
+      if (!typical || typical.km <= 0) return workout;
+
+      const cap = typical.km * 1.35;
+      const pool = new Map(
+        [
+          ...phaseWorkoutPool(level, phase),
+          ...workoutsOfType(workout.type),
+        ].map((candidate) => [candidate.key, candidate]),
+      );
+      const entries = [...pool.values()]
+        .filter((candidate) => candidate.type === workout.type)
+        .map((candidate) => ({
+          candidate,
+          total: this.qualityTotals(candidate, paces).total,
+        }));
+
+      const selected =
+        entries.find((entry) => entry.candidate.key === workout.key) ??
+        entries[0];
+      if (!selected) return workout;
+      if (selected.total <= cap) return workout;
+
+      const smaller = entries
+        .filter((entry) => entry.total <= cap)
+        .sort((a, b) => b.total - a.total)[0];
+
+      if (smaller) return smaller.candidate;
+
+      return entries.sort((a, b) => a.total - b.total)[0]?.candidate ?? workout;
+    };
+
+    return {
+      primary: fit(workouts.primary) ?? workouts.primary,
+      secondary: fit(workouts.secondary),
+    };
+  }
+
+  private describeTrainingPattern(
+    pattern: TrainingPattern | undefined,
+    layout: WeekLayout[],
+    qualityCount: number,
+  ): string | undefined {
+    if (!pattern?.hasData) return undefined;
+
+    const format = (days: string[]) => days.filter(Boolean).join('/');
+    const qualityDays = layout
+      .filter((entry) => entry.role === 'quality1' || entry.role === 'quality2')
+      .map((entry) => entry.day);
+    const recoveryDays = layout
+      .filter((entry) => entry.role === 'recovery')
+      .map((entry) => entry.day);
+    const easyDays = layout
+      .filter((entry) => entry.role === 'easy')
+      .map((entry) => entry.day);
+    const longDay = layout.find((entry) => entry.role === 'long')?.day;
+
+    const structure = [
+      qualityDays.length > 0
+        ? `${qualityCount}x qualidade (${format(qualityDays)})`
+        : undefined,
+      recoveryDays.length > 0
+        ? `regenerativo ${format(recoveryDays)}`
+        : undefined,
+      easyDays.length > 0 ? `leve ${format(easyDays)}` : undefined,
+      longDay ? `longão ${longDay}` : undefined,
+    ]
+      .filter((part): part is string => !!part)
+      .join(', ');
+
+    const historicalQuality = pattern.preferredQualityDays;
+    const adjusted =
+      historicalQuality.length > 0 &&
+      qualityDays.some((day) => !historicalQuality.includes(day));
+
+    const base = `Seu histórico mostra cerca de ${pattern.runsPerWeek}x corrida por semana e longão${pattern.preferredLongRunDay ? ` em ${pattern.preferredLongRunDay}` : 's'}. Mantive sua estrutura: ${structure}.`;
+
+    if (adjusted) {
+      return `${base} Ajustei os dias de qualidade (seu histórico: ${format(historicalQuality)}) para garantir recuperação entre os estímulos.`;
+    }
+
+    return base;
+  }
+
   private longRunSession(opts: {
     km: number;
     paces: PaceSet;
@@ -798,8 +967,16 @@ export class TrainingPlansService {
     daysPerWeek: number;
     weekIndex: number;
     qualityCount: number;
+    pattern?: TrainingPattern;
   }): WeekLayout[] {
-    const { runDays, longRunDay, daysPerWeek, weekIndex, qualityCount } = opts;
+    const {
+      runDays,
+      longRunDay,
+      daysPerWeek,
+      weekIndex,
+      qualityCount,
+      pattern,
+    } = opts;
 
     let trainingDays = Array.from(
       new Set([...runDays, longRunDay].filter((d) => d in DAY_ORDER)),
@@ -824,37 +1001,66 @@ export class TrainingPlansService {
         (DAY_ORDER[b] - DAY_ORDER[a] + 7) % 7,
       );
 
-    const byDistanceToLong = [...candidates].sort((a, b) => {
-      const da = Math.abs(dist(a, longRunDay) - 3);
-      const db = Math.abs(dist(b, longRunDay) - 3);
-      return da - db || DAY_ORDER[a] - DAY_ORDER[b];
-    });
+    const qualityPreference = (day: string) =>
+      pattern?.qualityDayRate[day] ?? 0;
+    const runPreference = (day: string) => pattern?.weekdayRate[day] ?? 0;
 
-    const quality1 = byDistanceToLong[0];
-    let quality2: string | undefined;
-
-    if (qualityCount >= 2 && byDistanceToLong.length >= 2) {
-      const rest = byDistanceToLong.slice(1);
-      rest.sort((a, b) => {
-        const sa = Math.min(dist(a, longRunDay), dist(a, quality1));
-        const sb = Math.min(dist(b, longRunDay), dist(b, quality1));
-        return sb - sa || DAY_ORDER[a] - DAY_ORDER[b];
-      });
-      [quality2] = rest;
-    }
-
-    const used = new Set(
-      [longRunDay, quality1, quality2].filter((d): d is string => !!d),
-    );
-
-    let recovery: string | undefined = trainingDays.find(
-      (d) => !used.has(d) && dist(d, longRunDay) === 1,
-    );
-    if (!recovery && quality2) {
-      recovery = candidates.find(
-        (d) => !used.has(d) && d !== quality2 && dist(d, quality2) === 1,
+    const pickQualityDay = (
+      pool: string[],
+      base: string,
+      used: Set<string>,
+      forbidden: string[] = [],
+    ): string | undefined => {
+      const eligible = pool.filter(
+        (day) =>
+          !used.has(day) && !forbidden.includes(day) && dist(day, base) >= 2,
       );
+      const fallback = pool.filter(
+        (day) => !used.has(day) && !forbidden.includes(day),
+      );
+      const options = eligible.length > 0 ? eligible : fallback;
+
+      return [...options].sort((a, b) => {
+        const preferenceGap = qualityPreference(b) - qualityPreference(a);
+        if (preferenceGap !== 0) return preferenceGap;
+
+        const spacingGap =
+          Math.abs(dist(a, base) - 3) - Math.abs(dist(b, base) - 3);
+        if (spacingGap !== 0) return spacingGap;
+
+        return DAY_ORDER[a] - DAY_ORDER[b];
+      })[0];
+    };
+
+    const used = new Set<string>([longRunDay]);
+    const quality1 =
+      pickQualityDay(candidates, longRunDay, used) ?? candidates[0];
+
+    let quality2: string | undefined;
+    if (qualityCount >= 2 && candidates.length >= 2) {
+      quality2 = pickQualityDay(candidates, quality1, used, [quality1]);
     }
+
+    used.add(quality1);
+    if (quality2) used.add(quality2);
+
+    const adjacencyBase = quality2 ?? quality1;
+    const recovery = candidates
+      .filter(
+        (day) =>
+          !used.has(day) &&
+          (dist(day, longRunDay) === 1 || dist(day, adjacencyBase) === 1),
+      )
+      .sort((a, b) => {
+        const rankA = dist(a, longRunDay) === 1 ? 0 : 1;
+        const rankB = dist(b, longRunDay) === 1 ? 0 : 1;
+        if (rankA !== rankB) return rankA - rankB;
+
+        const preferenceGap = runPreference(b) - runPreference(a);
+        if (preferenceGap !== 0) return preferenceGap;
+
+        return DAY_ORDER[a] - DAY_ORDER[b];
+      })[0];
 
     const layout: WeekLayout[] = ALL_DAY_SHORTS.map((day) => {
       if (!trainingDays.includes(day)) return { day, role: 'rest' as const };
@@ -927,9 +1133,19 @@ export class TrainingPlansService {
     );
     const shortRef = shortRefs.length > 0 ? Math.min(...shortRefs) : undefined;
 
-    const intervalBase = shortRef
-      ? shortRef * 1.03
-      : this.defaultIntervalPace(profile.level);
+    const pattern = profile.pattern;
+    const observedIntervalPace = pattern?.typicalQuality.interval?.repPace;
+    const observedTempoPace = pattern?.typicalQuality.tempo?.repPace;
+
+    const intervalCandidates = [
+      shortRef ? shortRef * 1.03 : undefined,
+      observedIntervalPace ? observedIntervalPace * 1.02 : undefined,
+    ].filter((pace): pace is number => pace !== undefined);
+
+    const intervalBase =
+      intervalCandidates.length > 0
+        ? Math.min(...intervalCandidates)
+        : this.defaultIntervalPace(profile.level);
 
     const thresholdEstimate = shortRef
       ? shortRef * Math.pow(10 / 3, 0.06)
@@ -939,6 +1155,7 @@ export class TrainingPlansService {
       Math.max(
         thresholdEstimate,
         profile.bestMediumPace ?? 0,
+        observedTempoPace ?? 0,
         intervalBase + 5,
       ),
       MIN_PACE + 10,
@@ -1066,41 +1283,87 @@ export class TrainingPlansService {
     return defaults[level];
   }
 
-  private resolveRunDays(goal: Goal): string[] {
+  private resolveRunDays(goal: Goal, pattern?: TrainingPattern): string[] {
     const days = (goal.runDays ?? [])
       .map((d) => FULL_TO_SHORT[d] ?? d)
       .filter((d) => d in DAY_ORDER);
 
     if (days.length > 0) return Array.from(new Set(days));
+
+    const preferred = (pattern?.preferredRunDays ?? []).filter(
+      (d) => d in DAY_ORDER,
+    );
+    if (preferred.length > 0) return preferred;
+
     return ['Seg', 'Ter', 'Qui', 'Sex'];
   }
 
-  private resolveLongRunDay(goal: Goal, runDays: string[]): string {
+  private resolveLongRunDay(
+    goal: Goal,
+    runDays: string[],
+    pattern?: TrainingPattern,
+  ): string {
     const longDay = goal.longRunDay
       ? (FULL_TO_SHORT[goal.longRunDay] ?? goal.longRunDay)
       : undefined;
 
     if (longDay && longDay in DAY_ORDER) return longDay;
+
+    const preferred = pattern?.preferredLongRunDay;
+    if (preferred && preferred in DAY_ORDER) {
+      if ((goal.runDays ?? []).length === 0 || runDays.includes(preferred)) {
+        return preferred;
+      }
+    }
+
     if (runDays.includes('Sáb')) return 'Sáb';
     if (runDays.includes('Dom')) return 'Dom';
     return runDays[runDays.length - 1];
   }
 
-  private resolveDaysPerWeek(goal: Goal, runDays: string[]): number {
-    const days =
-      goal.daysPerWeek && goal.daysPerWeek > 0
-        ? goal.daysPerWeek
-        : runDays.length;
+  private resolveDaysPerWeek(
+    goal: Goal,
+    runDays: string[],
+    pattern?: TrainingPattern,
+  ): number {
+    const formDays = (goal.runDays ?? []).filter((d) => {
+      const short = FULL_TO_SHORT[d] ?? d;
+      return short in DAY_ORDER;
+    }).length;
+
+    let days: number;
+
+    if (formDays > 0) {
+      days = formDays;
+    } else if (pattern?.hasData && pattern.runsPerWeek > 0) {
+      days = Math.round(pattern.runsPerWeek);
+    } else if (goal.daysPerWeek && goal.daysPerWeek > 0) {
+      days = goal.daysPerWeek;
+    } else {
+      days = runDays.length;
+    }
+
     return Math.max(2, Math.min(days, 7));
   }
 
   private qualitySessionsPerWeek(
     level: AthleteLevel,
     runDays: string[],
+    pattern?: TrainingPattern,
   ): number {
-    if (runDays.length <= 3) return 1;
-    if (level === 'beginner' || level === 'novice') return 1;
-    return 2;
+    const cap = runDays.length <= 3 ? 1 : 2;
+
+    if (level === 'beginner') return 1;
+
+    const historical =
+      pattern?.hasData && pattern.qualityPerWeek > 0
+        ? Math.round(pattern.qualityPerWeek)
+        : undefined;
+
+    const fallback = level === 'novice' ? 1 : 2;
+    const desired = historical ?? fallback;
+
+    return Math.max(1, Math.min(cap, desired));
   }
 
   private longRunCap(raceKm: number, level: AthleteLevel): number {
@@ -1192,8 +1455,11 @@ export class TrainingPlansService {
     summaries: WeekSummary[],
     assessment?: RaceTargetAssessment,
     targetNote?: string,
+    patternNote?: string,
   ) {
     if (!process.env.OPENAI_API_KEY || plans.length === 0) return;
+
+    const pattern = profile.pattern;
 
     const context = JSON.stringify({
       atleta: {
@@ -1205,6 +1471,33 @@ export class TrainingPlansService {
         melhorPace10k: profile.bestMediumPace,
         corridasPorSemana: profile.runsPerWeek,
       },
+      historicoDoAtleta: pattern?.hasData
+        ? {
+            amostraDeCorridas: pattern.sampleSize,
+            semanasAnalisadas: pattern.weeksAnalyzed,
+            confianca: pattern.confidence,
+            diasQueCostumaCorrer: pattern.preferredRunDays,
+            diasDeQualidade: pattern.preferredQualityDays,
+            diaDoLongao: pattern.preferredLongRunDay ?? null,
+            corridasPorSemana: pattern.runsPerWeek,
+            qualidadePorSemana: pattern.qualityPerWeek,
+            mixDeTreinos: pattern.typeMix,
+            paceLeveHabitualSegKm: pattern.easyPace ?? null,
+            longaoHabitual: pattern.longRun ?? null,
+            treinosTipicos: Object.fromEntries(
+              Object.entries(pattern.typicalQuality).map(([type, typical]) => [
+                type,
+                {
+                  km: typical?.km,
+                  paceSegKm: typical?.pace,
+                  paceDeTiroSegKm: typical?.repPace ?? null,
+                  repeticoes: typical?.reps,
+                },
+              ]),
+            ),
+            ajusteAplicado: patternNote ?? null,
+          }
+        : null,
       meta: {
         titulo: goal.title,
         provaKm: goal.targetDistance / 1000,
@@ -1260,7 +1553,7 @@ export class TrainingPlansService {
 
       const coachNotes =
         index === 0
-          ? [targetNote, review.overview, week.rationale]
+          ? [patternNote, targetNote, review.overview, week.rationale]
               .filter((part): part is string => !!part)
               .join('\n\n')
           : week.rationale;

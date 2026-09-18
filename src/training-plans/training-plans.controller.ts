@@ -31,6 +31,12 @@ export class TrainingPlansController {
     return this.trainingPlansService.findAll(userId);
   }
 
+  @Get('pattern')
+  async getPattern(@Req() req: Request) {
+    const userId = await this.sessionService.resolveUserId(req);
+    return this.trainingPlansService.getPattern(userId);
+  }
+
   @Get('by-week')
   async findByWeek(@Query('weekStart') weekStart: string, @Req() req: Request) {
     const userId = await this.sessionService.resolveUserId(req);

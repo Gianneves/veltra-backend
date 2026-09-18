@@ -1,5 +1,6 @@
 import { TrainingPlansService } from './training-plans.service';
 import { resolvePhase } from './workout-library';
+import { TrainingPattern, emptyTrainingPattern } from './training-pattern';
 import { Goal } from 'src/goals/entities/goal.entity';
 import type { Activity } from 'src/activities/entities/activity.entity';
 import type { AthleteProfile } from './athlete-profile.service';
@@ -46,6 +47,53 @@ function makeProfile(overrides: Partial<AthleteProfile> = {}): AthleteProfile {
     bestMediumPace: 348,
     bestLongPace: 365,
     runsPerWeek: 4,
+    pattern: emptyTrainingPattern(),
+    ...overrides,
+  };
+}
+
+function makePattern(
+  overrides: Partial<TrainingPattern> = {},
+): TrainingPattern {
+  return {
+    hasData: true,
+    confidence: 'high',
+    sampleSize: 40,
+    weeksAnalyzed: 12,
+    runsPerWeek: 4,
+    qualityPerWeek: 2,
+    weekdayRate: {
+      Dom: 0.9,
+      Seg: 0,
+      Ter: 0.9,
+      Qua: 0.1,
+      Qui: 0.9,
+      Sex: 0.8,
+      Sáb: 0.2,
+    },
+    preferredRunDays: ['Dom', 'Ter', 'Qui', 'Sex'],
+    preferredLongRunDay: 'Dom',
+    qualityDayRate: { Ter: 0.5, Qui: 0.5 },
+    preferredQualityDays: ['Ter', 'Qui'],
+    typeMix: {
+      interval: 0.35,
+      tempo: 0.2,
+      fartlek: 0.1,
+      easy: 0.25,
+      long: 0.1,
+    },
+    typicalQuality: {
+      interval: {
+        count: 12,
+        km: 9.5,
+        pace: 345,
+        repPace: 320,
+        reps: ['800m'],
+      },
+      tempo: { count: 6, km: 10, pace: 355, repPace: 340, reps: [] },
+    },
+    easyPace: 385,
+    longRun: { km: 17, pace: 380 },
     ...overrides,
   };
 }
@@ -141,6 +189,19 @@ function targetNoteFrom(planRepository: {
   return calls.find(([, patch]) =>
     patch?.coachNotes?.includes('Meta de tempo'),
   )?.[1].coachNotes;
+}
+
+function allCoachNotes(planRepository: {
+  update: jest.Mock;
+}): string | undefined {
+  const calls = planRepository.update.mock.calls as Array<
+    [string, { coachNotes?: string }]
+  >;
+
+  return calls
+    .map(([, patch]) => patch?.coachNotes)
+    .filter((notes): notes is string => !!notes)
+    .join('\n');
 }
 
 function weekVolume(plan: TrainingPlan): number {
@@ -388,5 +449,131 @@ describe('TrainingPlansService', () => {
     const targetPace = targetTime / 21.097;
     expect(race!.plannedPace).toBeGreaterThan(targetPace);
     expect(targetNoteFrom(planRepository)).toContain('agressiva');
+  });
+
+  it('segue os dias de qualidade e o longão do histórico quando o formulário não define', async () => {
+    const goal = makeGoal({
+      targetDistance: 21097,
+      longestRunDistance: 18000,
+      runDays: [],
+      longRunDay: undefined,
+      daysPerWeek: 3,
+    });
+    const profile = makeProfile({
+      level: 'intermediate',
+      longestRunKm: 18,
+      pattern: makePattern(),
+    });
+
+    const { plans } = await generate(goal, profile);
+    const firstWeek = plans[0].sessions ?? [];
+
+    const qualityDays = firstWeek
+      .filter((s) => ['interval', 'tempo', 'fartlek'].includes(s.type))
+      .map((s) => s.day)
+      .sort();
+    expect(qualityDays).toEqual(['Qui', 'Ter']);
+
+    const longRun = firstWeek.find((s) => s.type === 'long_run');
+    expect(longRun?.day).toBe('Dom');
+
+    expect(firstWeek.filter((s) => s.type === 'rest').length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it('limita a qualidade semanal à mediana do histórico', async () => {
+    const goal = makeGoal({
+      targetDistance: 21097,
+      longestRunDistance: 18000,
+      runDays: [],
+      longRunDay: undefined,
+    });
+    const profile = makeProfile({
+      level: 'intermediate',
+      longestRunKm: 18,
+      pattern: makePattern({ qualityPerWeek: 1 }),
+    });
+
+    const { plans } = await generate(goal, profile);
+
+    for (const plan of plans) {
+      const quality = (plan.sessions ?? []).filter((s) =>
+        ['interval', 'tempo', 'fartlek'].includes(s.type),
+      );
+      expect(quality.length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('usa o pace de tiro observado no histórico', async () => {
+    const goal = makeGoal({ targetDistance: 10000 });
+    const profile = makeProfile();
+    const pattern = makePattern({
+      typicalQuality: {
+        interval: {
+          count: 10,
+          km: 9,
+          pace: 350,
+          repPace: 300,
+          reps: ['800m'],
+        },
+      },
+    });
+
+    const { plans: baselinePlans } = await generate(goal, profile);
+    const { plans } = await generate(goal, makeProfile({ pattern }));
+
+    const relevant = (session: TrainingSession) =>
+      session.type === 'interval' &&
+      !(session.notes ?? '').includes('pace da prova');
+
+    const baselineIntervals = allSessions(baselinePlans).filter(relevant);
+    const intervals = allSessions(plans).filter(relevant);
+
+    expect(baselineIntervals.length).toBeGreaterThan(0);
+    expect(intervals.length).toBeGreaterThan(0);
+
+    for (const session of intervals) {
+      expect(session.plannedPace).toBeLessThanOrEqual(330);
+    }
+
+    expect(
+      Math.min(...baselineIntervals.map((s) => s.plannedPace)),
+    ).toBeGreaterThan(330);
+  });
+
+  it('ajusta o volume da qualidade ao histórico e explica a estrutura', async () => {
+    const goal = makeGoal({ targetDistance: 21097, longestRunDistance: 18000 });
+    const pattern = makePattern({
+      typicalQuality: {
+        interval: {
+          count: 12,
+          km: 6,
+          pace: 350,
+          repPace: 320,
+          reps: ['800m'],
+        },
+      },
+    });
+    const profile = makeProfile({ level: 'intermediate', longestRunKm: 18 });
+
+    const { plans, planRepository } = await generate(
+      goal,
+      makeProfile({ ...profile, pattern }),
+    );
+
+    const intervals = allSessions(plans).filter(
+      (s) =>
+        s.type === 'interval' && !(s.notes ?? '').includes('pace da prova'),
+    );
+
+    expect(intervals.length).toBeGreaterThan(0);
+    for (const session of intervals) {
+      expect(session.plannedDistance).toBeLessThanOrEqual(8200);
+    }
+
+    const notes = allCoachNotes(planRepository);
+    expect(notes).toContain('histórico');
+    expect(notes).toContain('longão');
   });
 });

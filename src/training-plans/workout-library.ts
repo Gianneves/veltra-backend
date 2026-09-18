@@ -1,6 +1,14 @@
 import type { AthleteLevel } from './athlete-profile.service';
+import { repSizesFromText } from './activity-features';
 
 export type QualityType = 'interval' | 'tempo' | 'fartlek';
+
+export interface WorkoutPreferences {
+  primaryType?: QualityType;
+  secondaryType?: QualityType;
+  typicalReps?: Partial<Record<QualityType, string[]>>;
+  typicalMainKm?: Partial<Record<QualityType, number>>;
+}
 export type PlanPhase = 'base' | 'build' | 'peak' | 'taper';
 export type PaceRef = 'interval' | 'threshold' | 'goal';
 
@@ -426,6 +434,24 @@ export function raceSpecificWorkout(raceKm: number): QualityWorkout {
   };
 }
 
+export function phaseWorkoutPool(
+  level: AthleteLevel,
+  phase: PlanPhase,
+): QualityWorkout[] {
+  return ROTATIONS[level][phase].map((key) => WORKOUTS[key]);
+}
+
+export function workoutsOfType(type: QualityType): QualityWorkout[] {
+  return Object.values(WORKOUTS).filter((workout) => workout.type === type);
+}
+
+export function secondaryWorkoutPool(
+  level: AthleteLevel,
+  phase: PlanPhase,
+): QualityWorkout[] {
+  return SECONDARY[level][phase].map((key) => WORKOUTS[key]);
+}
+
 export function selectWeekWorkouts(opts: {
   level: AthleteLevel;
   phase: PlanPhase;
@@ -434,6 +460,7 @@ export function selectWeekWorkouts(opts: {
   raceKm: number;
   hasSecondaryDay: boolean;
   deload: boolean;
+  preferences?: WorkoutPreferences;
 }): WeekWorkouts {
   const {
     level,
@@ -443,6 +470,7 @@ export function selectWeekWorkouts(opts: {
     raceKm,
     hasSecondaryDay,
     deload,
+    preferences,
   } = opts;
 
   if (deload) {
@@ -464,18 +492,69 @@ export function selectWeekWorkouts(opts: {
     return {
       primary,
       secondary: hasSecondaryDay
-        ? pickSecondary(level, phase, phaseWeekIndex, primary)
+        ? pickSecondary(level, phase, phaseWeekIndex, primary, preferences)
         : undefined,
     };
   }
 
-  const rotation = ROTATIONS[level][phase];
-  const workout = WORKOUTS[rotation[phaseWeekIndex % rotation.length]];
+  const pool = orderWorkoutPool(
+    phaseWorkoutPool(level, phase),
+    preferences,
+    preferences?.primaryType,
+  );
+  const workout = pool[phaseWeekIndex % pool.length];
   const secondary = hasSecondaryDay
-    ? pickSecondary(level, phase, phaseWeekIndex, workout)
+    ? pickSecondary(level, phase, phaseWeekIndex, workout, preferences)
     : undefined;
 
   return { primary: workout, secondary };
+}
+
+export function orderWorkoutPool(
+  pool: QualityWorkout[],
+  preferences: WorkoutPreferences | undefined,
+  preferredType: QualityType | undefined,
+): QualityWorkout[] {
+  if (!preferredType) return pool;
+
+  const score = (workout: QualityWorkout) =>
+    workoutFamiliarity(workout, preferences);
+  const sortFamiliar = (list: QualityWorkout[]) =>
+    [...list].sort((a, b) => score(b) - score(a));
+
+  const preferred = sortFamiliar(
+    pool.filter((workout) => workout.type === preferredType),
+  );
+  const others = sortFamiliar(
+    pool.filter((workout) => workout.type !== preferredType),
+  );
+
+  const ordered = [...preferred, ...others];
+  return ordered.length > 0 ? ordered : pool;
+}
+
+function workoutFamiliarity(
+  workout: QualityWorkout,
+  preferences?: WorkoutPreferences,
+): number {
+  if (!preferences) return 0;
+
+  const typicalReps = preferences.typicalReps?.[workout.type] ?? [];
+  const repMatch =
+    typicalReps.length > 0 &&
+    repSizesFromText(`${workout.label} ${workout.notes}`).some((size) =>
+      typicalReps.includes(size),
+    )
+      ? 2
+      : 0;
+
+  const typicalMainKm = preferences.typicalMainKm?.[workout.type];
+  const mainKm = workout.mainKm;
+
+  if (!typicalMainKm || !mainKm) return repMatch;
+
+  const gap = Math.abs(mainKm - typicalMainKm) / Math.max(typicalMainKm, 1);
+  return repMatch + Math.max(0, 1 - gap);
 }
 
 function pickSecondary(
@@ -483,14 +562,18 @@ function pickSecondary(
   phase: PlanPhase,
   phaseWeekIndex: number,
   primary: QualityWorkout,
+  preferences?: WorkoutPreferences,
 ): QualityWorkout | undefined {
-  const keys = SECONDARY[level][phase];
-  if (keys.length === 0) return undefined;
+  const candidates = secondaryWorkoutPool(level, phase).filter(
+    (workout) => workout.type !== primary.type,
+  );
+  if (candidates.length === 0) return undefined;
 
-  for (let offset = 0; offset < keys.length; offset++) {
-    const candidate = WORKOUTS[keys[(phaseWeekIndex + offset) % keys.length]];
-    if (candidate.type !== primary.type) return candidate;
-  }
+  const ordered = orderWorkoutPool(
+    candidates,
+    preferences,
+    preferences?.secondaryType,
+  );
 
-  return undefined;
+  return ordered[phaseWeekIndex % ordered.length];
 }

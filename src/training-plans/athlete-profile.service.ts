@@ -3,6 +3,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThanOrEqual, Repository } from 'typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
 import type { Goal } from 'src/goals/entities/goal.entity';
+import { buildActivityFeatures } from './activity-features';
+import {
+  TrainingPattern,
+  buildTrainingPattern,
+  emptyTrainingPattern,
+} from './training-pattern';
 
 export type AthleteLevel = 'beginner' | 'novice' | 'intermediate' | 'advanced';
 
@@ -18,6 +24,7 @@ export interface AthleteProfile {
   bestMediumPace?: number;
   bestLongPace?: number;
   runsPerWeek: number;
+  pattern: TrainingPattern;
 }
 
 const EFFORT_WINDOW_DAYS = 180;
@@ -78,6 +85,13 @@ export class AthleteProfileService {
 
     const effectiveLongestKm = Math.max(longestRunKm, goalLongestKm);
     const effectiveWeeklyKm = Math.max(recentWeeklyKm, goalLongestKm * 2.2);
+    const pattern =
+      runs.length > 0
+        ? buildTrainingPattern(
+            runs.map((run) => buildActivityFeatures(run)),
+            { now },
+          )
+        : emptyTrainingPattern();
 
     return {
       level: this.classify(effectiveLongestKm, effectiveWeeklyKm),
@@ -91,6 +105,7 @@ export class AthleteProfileService {
       bestMediumPace: this.bestPace(runs, 5500, 10500),
       bestLongPace: this.bestPace(runs, 10500, Infinity),
       runsPerWeek: this.runsPerWeek(runs, now),
+      pattern,
     };
   }
 
