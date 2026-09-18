@@ -6,12 +6,14 @@ import { Activity } from './entities/activity.entity';
 import { Insight } from 'src/insights/entities/insight.entity';
 import { InsightsModule } from 'src/insights/insights.module';
 import { AiModule } from 'src/ai/ai.module';
+import { SessionModule } from 'src/auth/session.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Activity, Insight]),
     InsightsModule,
     AiModule,
+    SessionModule,
   ],
   controllers: [ActivitiesController],
   providers: [ActivitiesService],
