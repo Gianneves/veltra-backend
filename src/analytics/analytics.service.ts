@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Between, Repository } from 'typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
 
 @Injectable()
@@ -16,8 +16,14 @@ export class AnalyticsService {
     weekStart.setDate(now.getDate() - now.getDay());
     weekStart.setHours(0, 0, 0, 0);
 
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 7);
+
     const activities = await this.activityRepository.find({
-      where: { user: { id: userId } },
+      where: {
+        user: { id: userId },
+        start_date: Between(weekStart, weekEnd),
+      },
     });
 
     const totalDistance = activities.reduce((sum, a) => sum + a.distance, 0);
