@@ -1,6 +1,7 @@
 import {
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsString,
   MaxLength,
   MinLength,
@@ -12,6 +13,10 @@ export class CreateUserDto {
   @MinLength(3)
   @MaxLength(100)
   name!: string;
+
+  @IsOptional()
+  @IsString()
+  avatarUrl?: string;
 
   @IsNumber()
   @IsNotEmpty()

@@ -24,6 +24,9 @@ export class User {
   @Column()
   name!: string;
 
+  @Column({ nullable: true })
+  avatarUrl?: string;
+
   @IsString()
   @IsNotEmpty()
   @Column()

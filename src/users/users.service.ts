@@ -34,10 +34,14 @@ export class UsersService {
       user.accessToken = createUserDto.accessToken;
       user.refreshToken = createUserDto.refreshToken;
       user.expiresAt = expiresDate;
+      if (createUserDto.avatarUrl) {
+        user.avatarUrl = createUserDto.avatarUrl;
+      }
     } else {
       user = this.userRepository.create({
         name: createUserDto.name,
         stravaId: createUserDto.stravaId,
+        avatarUrl: createUserDto.avatarUrl,
         accessToken: createUserDto.accessToken,
         refreshToken: createUserDto.refreshToken,
         expiresAt: expiresDate,
@@ -86,7 +90,7 @@ export class UsersService {
   async findById(id: string) {
     return this.userRepository.findOne({
       where: { id },
-      select: ['id', 'name', 'stravaId', 'createdAt', 'updatedAt'],
+      select: ['id', 'name', 'avatarUrl', 'stravaId', 'createdAt', 'updatedAt'],
     });
   }
 
@@ -107,6 +111,10 @@ export class UsersService {
       refreshToken: tokens.refreshToken,
       expiresAt: new Date(tokens.expiresAt * 1000),
     });
+  }
+
+  async updateAvatar(userId: string, avatarUrl: string) {
+    await this.userRepository.update(userId, { avatarUrl });
   }
 
   async clearStravaTokens(userId: string) {

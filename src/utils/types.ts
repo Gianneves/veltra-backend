@@ -6,6 +6,8 @@ export interface StravaAuthResponse {
     id: number;
     firstname: string;
     lastname: string;
+    profile?: string;
+    profile_medium?: string;
   };
 }
 

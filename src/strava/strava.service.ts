@@ -54,6 +54,17 @@ export class StravaService {
     }
   }
 
+  async fetchAthleteAvatar(accessToken: string): Promise<string | null> {
+    const response = await axios.get<{
+      profile?: string;
+      profile_medium?: string;
+    }>(`${STRAVA_API}/athlete`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    return response.data.profile_medium ?? response.data.profile ?? null;
+  }
+
   async subscribePush(callbackUrl: string, verifyToken: string) {
     const response = await axios.post(`${STRAVA_API}/push_subscriptions`, {
       client_id: process.env.STRAVA_CLIENT_ID,
