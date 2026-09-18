@@ -23,6 +23,7 @@ export interface AthleteProfile {
   bestShortPace?: number;
   bestMediumPace?: number;
   bestLongPace?: number;
+  maxHeartRate?: number;
   runsPerWeek: number;
   pattern: TrainingPattern;
 }
@@ -93,8 +94,22 @@ export class AthleteProfileService {
           )
         : emptyTrainingPattern();
 
+    const levelFromVolume = this.classify(
+      effectiveLongestKm,
+      effectiveWeeklyKm,
+    );
+    const threeKmLevel =
+      runs.length < 3 ? this.classifyFromThreeKm(goal?.threeKmTime) : undefined;
+    const maxHeartRate = runs.reduce(
+      (best, run) =>
+        run.max_heartrate && run.max_heartrate > best
+          ? run.max_heartrate
+          : best,
+      0,
+    );
+
     return {
-      level: this.classify(effectiveLongestKm, effectiveWeeklyKm),
+      level: threeKmLevel ?? levelFromVolume,
       hasData: runs.length >= 3,
       recentWeeklyKm: this.round(recentWeeklyKm, 1),
       peakWeeklyKm: this.round(peakWeeklyKm, 1),
@@ -104,9 +119,20 @@ export class AthleteProfileService {
       bestShortPace: this.bestPace(runs, 3000, 5500),
       bestMediumPace: this.bestPace(runs, 5500, 10500),
       bestLongPace: this.bestPace(runs, 10500, Infinity),
+      maxHeartRate: maxHeartRate > 0 ? maxHeartRate : undefined,
       runsPerWeek: this.runsPerWeek(runs, now),
       pattern,
     };
+  }
+
+  private classifyFromThreeKm(threeKmTime?: number): AthleteLevel | undefined {
+    if (!threeKmTime || threeKmTime <= 0) return undefined;
+
+    const pace = threeKmTime / 3;
+    if (pace >= 420) return 'beginner';
+    if (pace >= 350) return 'novice';
+    if (pace >= 290) return 'intermediate';
+    return 'advanced';
   }
 
   private classify(longestKm: number, weeklyKm: number): AthleteLevel {

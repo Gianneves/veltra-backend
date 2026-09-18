@@ -1,5 +1,5 @@
 import { TrainingPlansService } from './training-plans.service';
-import { resolvePhase } from './workout-library';
+import { qualityMainScale, resolvePhase } from './workout-library';
 import { TrainingPattern, emptyTrainingPattern } from './training-pattern';
 import { Goal } from 'src/goals/entities/goal.entity';
 import type { Activity } from 'src/activities/entities/activity.entity';
@@ -89,8 +89,16 @@ function makePattern(
         pace: 345,
         repPace: 320,
         reps: ['800m'],
+        repSets: [{ count: 5, size: '800m', sizeKm: 0.8 }],
       },
-      tempo: { count: 6, km: 10, pace: 355, repPace: 340, reps: [] },
+      tempo: {
+        count: 6,
+        km: 10,
+        pace: 355,
+        repPace: 340,
+        reps: [],
+        repSets: [],
+      },
     },
     easyPace: 385,
     longRun: { km: 17, pace: 380 },
@@ -575,5 +583,284 @@ describe('TrainingPlansService', () => {
     const notes = allCoachNotes(planRepository);
     expect(notes).toContain('histórico');
     expect(notes).toContain('longão');
+  });
+
+  it('escala a qualidade para respeitar o teto de 20%', () => {
+    expect(qualityMainScale(50, 8, 0.2)).toBe(1);
+    expect(qualityMainScale(50, 20, 0.2)).toBeCloseTo(0.5, 5);
+    expect(qualityMainScale(50, 0, 0.2)).toBe(1);
+  });
+
+  it('mantém a progressão semanal dentro de 10% e reentrada segura após deload', async () => {
+    const goal = makeGoal({
+      targetDistance: 21097,
+      longestRunDistance: 18000,
+    });
+    const profile = makeProfile({
+      recentWeeklyKm: 40,
+      peakWeeklyKm: 45,
+      longestRunKm: 18,
+      pattern: makePattern({ longRun: { km: 17, pace: 380 }, easyKm: 8 }),
+    });
+
+    const { plans } = await generate(goal, profile);
+    const volumes = plans.map((plan) => weekVolume(plan) / 1000);
+    const longs = plans.map(
+      (plan) =>
+        (plan.sessions ?? []).find((session) => session.type === 'long_run')
+          ?.plannedDistance ?? 0,
+    );
+    const deloadIndexes = [3, 7];
+    const taperStart = plans.length - 2;
+
+    expect(longs[0] / 1000).toBeCloseTo(17, 0);
+
+    for (let i = 1; i < taperStart; i++) {
+      if (deloadIndexes.includes(i)) {
+        expect(volumes[i]).toBeLessThan(volumes[i - 1]);
+        continue;
+      }
+
+      const afterDeload = deloadIndexes.includes(i - 1);
+      const reference = afterDeload ? volumes[i - 2] : volumes[i - 1];
+      const allowed = reference * (afterDeload ? 1.05 : 1.1) + 0.4;
+      expect(volumes[i]).toBeLessThanOrEqual(allowed);
+
+      if (!afterDeload) {
+        expect(longs[i]).toBeLessThanOrEqual(longs[i - 1] * 1.1 + 50);
+      }
+    }
+  });
+
+  it('limita o volume forte da qualidade a 20% da semana', async () => {
+    const goal = makeGoal({
+      targetDistance: 21097,
+      longestRunDistance: 18000,
+    });
+    const pattern = makePattern({
+      longRun: { km: 17, pace: 380 },
+      easyKm: 8,
+      typicalQuality: {
+        interval: {
+          count: 12,
+          km: 20,
+          pace: 345,
+          repPace: 300,
+          reps: ['1km'],
+          repSets: [{ count: 10, size: '1km', sizeKm: 1 }],
+        },
+      },
+    });
+    const profile = makeProfile({
+      recentWeeklyKm: 40,
+      peakWeeklyKm: 45,
+      longestRunKm: 18,
+      pattern,
+    });
+
+    const { plans } = await generate(goal, profile);
+    const taperStart = plans.length - 2;
+
+    for (let i = 0; i < taperStart; i++) {
+      const weekKm = weekVolume(plans[i]) / 1000;
+      let hardKm = 0;
+
+      for (const session of plans[i].sessions ?? []) {
+        if (session.type !== 'interval') continue;
+        const match = (session.notes ?? '').match(
+          /(\d+) repetições de ([\d.,]+)(km|m)/,
+        );
+        if (!match) continue;
+
+        const reps = Number(match[1]);
+        const size = Number(match[2].replace(',', '.'));
+        hardKm += match[3] === 'km' ? reps * size : (reps * size) / 1000;
+      }
+
+      expect(hardKm).toBeLessThanOrEqual(weekKm * 0.2 + 0.6);
+    }
+  });
+
+  it('reaproveita a estrutura de tiros do atleta e evolui por fase', async () => {
+    const goal = makeGoal({
+      targetDistance: 21097,
+      longestRunDistance: 18000,
+    });
+    const pattern = makePattern({
+      longRun: { km: 17, pace: 380 },
+      easyKm: 8,
+      typicalQuality: {
+        interval: {
+          count: 12,
+          km: 10,
+          pace: 345,
+          repPace: 300,
+          reps: ['600m'],
+          repSets: [{ count: 6, size: '600m', sizeKm: 0.6 }],
+        },
+      },
+    });
+    const profile = makeProfile({
+      recentWeeklyKm: 60,
+      peakWeeklyKm: 70,
+      longestRunKm: 18,
+      pattern,
+    });
+
+    const { plans } = await generate(goal, profile);
+    const repeats = allSessions(plans)
+      .filter((session) => session.type === 'interval')
+      .map(
+        (session) =>
+          (session.notes ?? '').match(/(\d+) repetições de 600m/)?.[1],
+      )
+      .filter((value): value is string => !!value)
+      .map(Number);
+
+    expect(repeats.length).toBeGreaterThan(0);
+    expect(repeats).toContain(6);
+    expect(repeats.some((reps) => reps > 6)).toBe(true);
+  });
+
+  it('não reaproveita estrutura de tiro que não é esforço de qualidade', async () => {
+    const goal = makeGoal({
+      targetDistance: 21097,
+      longestRunDistance: 18000,
+    });
+    const pattern = makePattern({
+      typicalQuality: {
+        interval: {
+          count: 8,
+          km: 8,
+          pace: 380,
+          repPace: 380,
+          reps: ['600m'],
+          repSets: [{ count: 6, size: '600m', sizeKm: 0.6 }],
+        },
+      },
+    });
+
+    const { plans } = await generate(goal, makeProfile({ pattern }));
+    const historySessions = allSessions(plans).filter((session) =>
+      (session.notes ?? '').includes('repetições de 600m'),
+    );
+
+    expect(historySessions).toHaveLength(0);
+  });
+
+  it('preserva a distância típica das corridas leves ajustando a qualidade', async () => {
+    const goal = makeGoal({
+      targetDistance: 21097,
+      longestRunDistance: 18000,
+    });
+    const pattern = makePattern({
+      easyKm: 8,
+      typicalQuality: {
+        interval: {
+          count: 12,
+          km: 20,
+          pace: 345,
+          repPace: 300,
+          reps: ['1km'],
+          repSets: [{ count: 10, size: '1km', sizeKm: 1 }],
+        },
+        tempo: {
+          count: 6,
+          km: 12,
+          pace: 355,
+          repPace: 340,
+          reps: [],
+          repSets: [],
+        },
+      },
+    });
+    const profile = makeProfile({
+      recentWeeklyKm: 40,
+      peakWeeklyKm: 45,
+      longestRunKm: 18,
+      pattern,
+    });
+
+    const { plans } = await generate(goal, profile);
+    const taperStart = plans.length - 2;
+    const deloadIndexes = [3, 7];
+    const easyDistances = plans
+      .filter(
+        (_, index) => index < taperStart && !deloadIndexes.includes(index),
+      )
+      .flatMap((plan) =>
+        (plan.sessions ?? [])
+          .filter((session) => session.type === 'easy')
+          .map((session) => session.plannedDistance / 1000),
+      );
+
+    expect(easyDistances.length).toBeGreaterThan(0);
+    expect(Math.min(...easyDistances)).toBeGreaterThanOrEqual(6.9);
+  });
+
+  it('monta plano coerente sem histórico respeitando dias e longão do formulário', async () => {
+    const goal = makeGoal({
+      targetDistance: 21097,
+      longestRunDistance: undefined,
+      longestRunTime: undefined,
+      runDays: [],
+      longRunDay: 'Dom',
+      daysPerWeek: 5,
+    });
+    const profile = makeProfile({
+      hasData: false,
+      recentWeeklyKm: 0,
+      peakWeeklyKm: 0,
+      longestRunKm: 0,
+      bestShortPace: undefined,
+      bestMediumPace: undefined,
+      bestLongPace: undefined,
+      runsPerWeek: 0,
+      pattern: emptyTrainingPattern(),
+    });
+
+    const { plans } = await generate(goal, profile);
+    const firstWeek = plans[0].sessions ?? [];
+    const trainingDays = firstWeek.filter((session) => session.type !== 'rest');
+
+    expect(trainingDays).toHaveLength(5);
+    expect(firstWeek.find((session) => session.type === 'long_run')?.day).toBe(
+      'Dom',
+    );
+
+    for (const session of trainingDays) {
+      expect(session.plannedPace).toBeGreaterThanOrEqual(150);
+      expect(session.plannedDistance).toBeGreaterThan(0);
+    }
+  });
+
+  it('inclui zona e pace nas sessões quando há FC máxima observada', async () => {
+    const goal = makeGoal({ targetDistance: 10000 });
+    const profile = makeProfile({
+      maxHeartRate: 190,
+      pattern: makePattern(),
+    });
+
+    const { plans } = await generate(goal, profile);
+    const sessions = allSessions(plans).filter(
+      (session) => session.type !== 'rest',
+    );
+    const easy = sessions.filter((session) => session.type === 'easy');
+    const intervals = sessions.filter((session) => session.type === 'interval');
+
+    expect(easy.length).toBeGreaterThan(0);
+    expect(
+      easy.every((session) => (session.notes ?? '').includes('Z2 (FC')),
+    ).toBe(true);
+
+    expect(intervals.length).toBeGreaterThan(0);
+    expect(
+      intervals.some((session) => (session.notes ?? '').includes('Z4 (FC')),
+    ).toBe(true);
+    expect(
+      intervals.some((session) =>
+        (session.notes ?? '').includes('Pace médio por tiro'),
+      ),
+    ).toBe(true);
   });
 });

@@ -16,6 +16,9 @@ export interface ActivityFeatures {
   lapCount: number;
   maxSpeedRatio: number;
   repSizes: string[];
+  repSets: RepSet[];
+  averageHeartRate?: number;
+  maxHeartRate?: number;
   localDate: Date;
 }
 
@@ -93,6 +96,9 @@ export function buildActivityFeatures(activity: Activity): ActivityFeatures {
     lapCount: lapPaces.length,
     maxSpeedRatio,
     repSizes: repSizesFromText(activity.name ?? ''),
+    repSets: repSetsFromText(activity.name ?? ''),
+    averageHeartRate: activity.average_heartrate ?? undefined,
+    maxHeartRate: activity.max_heartrate ?? undefined,
     localDate,
   };
 }
@@ -155,6 +161,38 @@ export function repSizesFromText(text: string): string[] {
   }
 
   return [...sizes];
+}
+
+export interface RepSet {
+  count: number;
+  size: string;
+  sizeKm: number;
+}
+
+export function repSetsFromText(text: string): RepSet[] {
+  const normalized = normalizeText(text);
+  const sets: RepSet[] = [];
+
+  for (const match of normalized.matchAll(
+    /(\d+)\s*x\s*(\d+(?:[.,]\d+)?)\s*(km|m)?/g,
+  )) {
+    const count = Number(match[1]);
+    const value = Number(match[2].replace(',', '.'));
+    const unit = match[3] ?? (value >= 100 ? 'm' : '');
+    if (!unit || count <= 0 || count > 50) continue;
+
+    const sizeKm = unit === 'km' ? value : value / 1000;
+    if (sizeKm < 0.1 || sizeKm > 10) continue;
+
+    const size =
+      sizeKm >= 1
+        ? `${Number(sizeKm.toFixed(2))}km`
+        : `${Math.round(sizeKm * 1000)}m`;
+
+    sets.push({ count, size, sizeKm });
+  }
+
+  return sets;
 }
 
 export function normalizeText(value: string): string {

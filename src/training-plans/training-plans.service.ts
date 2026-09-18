@@ -15,11 +15,14 @@ import {
   PlanPhase,
   QualityWorkout,
   WorkoutPreferences,
+  historyIntervalWorkout,
   phaseWorkoutPool,
+  qualityMainScale,
   resolvePhase,
   selectWeekWorkouts,
   workoutsOfType,
 } from './workout-library';
+import { formatZone, zoneForSessionType } from './training-zones';
 import type { QualityRunType, TrainingPattern } from './training-pattern';
 import {
   RaceTargetAssessment,
@@ -88,6 +91,7 @@ const FULL_TO_SHORT: Record<string, string> = {
 const MIN_PACE = 150;
 const MAX_PACE = 600;
 const MIN_EASY_KM = 3;
+const MAX_QUALITY_MAIN_RATIO = 0.2;
 
 const SESSIONS_ORDER = {
   sessions: { dayOrder: 'ASC' },
@@ -319,6 +323,7 @@ export class TrainingPlansService {
         pattern,
         profile.level,
         phase,
+        isDeload,
       );
       phaseWeekIndexes[phase] += 1;
 
@@ -352,6 +357,8 @@ export class TrainingPlansService {
         layout,
         workouts,
         paces,
+        pattern,
+        maxHeartRate: profile.maxHeartRate,
         weekStart,
         weekIndex,
       });
@@ -461,6 +468,7 @@ export class TrainingPlansService {
     totalWeeks: number;
   }): { weeklyKm: number[]; longKm: number[] } {
     const { goal, profile, raceKm, totalWeeks } = opts;
+    const pattern = profile.pattern;
 
     const tablePeak = this.peakWeeklyVolume(raceKm, profile.level);
     const goalLongKm = goal.longestRunDistance
@@ -468,35 +476,53 @@ export class TrainingPlansService {
       : 0;
     const longCap = this.longRunCap(raceKm, profile.level);
 
-    const recentLong =
-      profile.longestRunKm > 0 ? profile.longestRunKm : goalLongKm;
-    const longFloor = Math.min(recentLong, longCap);
+    const recordedLong = Math.max(profile.longestRunKm, goalLongKm);
+    const typicalLong = pattern?.longRun?.km ?? 0;
+    const longStart = this.clamp(
+      typicalLong > 0 && typicalLong <= longCap
+        ? typicalLong
+        : recordedLong > 0
+          ? Math.min(recordedLong, longCap)
+          : tablePeak * 0.2,
+      4,
+      longCap,
+    );
+
     const weeklyForLong = (longKmValue: number) =>
       longKmValue <= 0 ? 0 : longKmValue / 0.62;
 
-    const peakCap =
-      profile.peakWeeklyKm > 0
-        ? profile.peakWeeklyKm * 1.05
-        : Number.POSITIVE_INFINITY;
     const fallbackWeekly = Math.max(10, tablePeak * 0.5);
     const recentWeekly =
       profile.recentWeeklyKm > 0 ? profile.recentWeeklyKm : fallbackWeekly;
 
-    const startWeekly = Math.min(
-      Math.max(recentWeekly, fallbackWeekly * 0.7, weeklyForLong(longFloor)),
-      peakCap,
-      tablePeak * 1.6,
+    const targetFromTable = Math.min(
+      Math.max(tablePeak, recentWeekly * 1.15),
+      recentWeekly * 1.5,
     );
-    const targetPeak = Math.min(
-      Math.max(tablePeak, startWeekly * 1.15),
-      startWeekly * 1.5,
+    const demonstratedPeak =
+      profile.peakWeeklyKm > 0
+        ? Math.min(profile.peakWeeklyKm, tablePeak * 1.1)
+        : 0;
+    const weeklyCeiling = Math.max(
+      recentWeekly,
+      targetFromTable,
+      demonstratedPeak,
+    );
+
+    const startWeekly = Math.min(
+      Math.max(recentWeekly, fallbackWeekly * 0.7, weeklyForLong(longStart)),
+      weeklyCeiling,
     );
 
     const weeklyKm: number[] = [];
     const longKm: number[] = [];
 
+    const MAX_WEEKLY_GROWTH = 1.1;
+    const DELOAD_REENTRY_GROWTH = 1.05;
+
     let weekly = startWeekly;
-    let long = Math.min(Math.max(longFloor, startWeekly * 0.28), longCap);
+    let long = longStart;
+    let afterDeload = false;
 
     for (let i = 0; i < totalWeeks; i++) {
       const isTaper = i >= totalWeeks - 2;
@@ -512,24 +538,34 @@ export class TrainingPlansService {
         const taperWeekly = Math.max(startWeekly * 0.4, weekly * factor);
         weeklyKm.push(Math.max(taperWeekly, weeklyForLong(taperLong)));
         longKm.push(taperLong);
-      } else if (isDeload) {
+        afterDeload = false;
+        continue;
+      }
+
+      if (isDeload) {
         const deloadLong = Math.min(
-          Math.max(long * 0.72, longFloor * 0.85),
+          Math.max(long * 0.72, longStart * 0.85),
           longCap,
         );
         weeklyKm.push(Math.max(weekly * 0.72, weeklyForLong(deloadLong)));
         longKm.push(deloadLong);
-      } else {
-        const nextLong = Math.min(
-          Math.max(long * 1.07 + 0.5, longFloor),
-          longCap,
-        );
-        const weekWeekly = Math.max(weekly, weeklyForLong(nextLong));
-        weeklyKm.push(weekWeekly);
-        longKm.push(nextLong);
-        weekly = Math.min(weekWeekly * 1.08, Math.max(targetPeak, weekWeekly));
-        long = nextLong;
+        afterDeload = true;
+        continue;
       }
+
+      const growth =
+        i === 0 ? 1 : afterDeload ? DELOAD_REENTRY_GROWTH : MAX_WEEKLY_GROWTH;
+      const nextLong = Math.min(Math.max(long * growth, longStart), longCap);
+      const nextWeekly = Math.min(
+        Math.max(weekly * growth, weeklyForLong(nextLong)),
+        Math.max(weeklyCeiling, weekly),
+      );
+
+      weeklyKm.push(nextWeekly);
+      longKm.push(nextLong);
+      weekly = nextWeekly;
+      long = nextLong;
+      afterDeload = false;
     }
 
     return { weeklyKm, longKm };
@@ -544,6 +580,8 @@ export class TrainingPlansService {
     layout: WeekLayout[];
     workouts: { primary: QualityWorkout; secondary?: QualityWorkout };
     paces: PaceSet;
+    pattern?: TrainingPattern;
+    maxHeartRate?: number;
     weekStart: Date;
     weekIndex: number;
   }): TrainingSession[] {
@@ -556,6 +594,8 @@ export class TrainingPlansService {
       layout,
       workouts,
       paces,
+      pattern,
+      maxHeartRate,
       weekStart,
       weekIndex,
     } = opts;
@@ -564,8 +604,6 @@ export class TrainingPlansService {
     const q2 = workouts.secondary
       ? this.qualityTotals(workouts.secondary, paces)
       : undefined;
-
-    const scale = isDeload ? 0.6 : 1;
 
     const normalizedLayout = layout.map((entry) =>
       entry.role === 'quality2' && !workouts.secondary
@@ -579,30 +617,71 @@ export class TrainingPlansService {
       (d) => d.role === 'quality1' || d.role === 'quality2',
     );
 
-    let qualityTotal =
-      (qualityDays.some((d) => d.role === 'quality1') ? q1.total * scale : 0) +
-      (qualityDays.some((d) => d.role === 'quality2') && q2
-        ? q2.total * scale
+    const usesQ1 = qualityDays.some((d) => d.role === 'quality1');
+    const usesQ2 = qualityDays.some((d) => d.role === 'quality2') && !!q2;
+
+    const deloadFactor = (workout: QualityWorkout) =>
+      isDeload && !workout.fromHistory ? 0.6 : 1;
+
+    const qualityMainBase =
+      (usesQ1 ? q1.mainKm * deloadFactor(workouts.primary) : 0) +
+      (usesQ2 && q2 ? q2.mainKm * deloadFactor(workouts.secondary!) : 0);
+
+    const qualityCapScale = qualityMainScale(
+      weeklyKm,
+      qualityMainBase,
+      MAX_QUALITY_MAIN_RATIO,
+    );
+    let qualityScale = qualityCapScale;
+
+    const qualityTotalWith = (scaleValue: number) =>
+      (usesQ1
+        ? q1.wu +
+          q1.extra +
+          q1.cd +
+          q1.mainKm * deloadFactor(workouts.primary) * scaleValue
+        : 0) +
+      (usesQ2 && q2
+        ? q2.wu +
+          q2.extra +
+          q2.cd +
+          q2.mainKm * deloadFactor(workouts.secondary!) * scaleValue
         : 0);
 
-    let easyRemaining = weeklyKm - longKm - qualityTotal;
+    const recoveryWeight = 0.75;
     const easyCount = easyDays.length + recoveryDays.length;
+    const unitWeight = easyDays.length + recoveryDays.length * recoveryWeight;
 
-    if (easyCount > 0 && easyRemaining < easyCount * MIN_EASY_KM) {
-      const available = Math.max(
-        weeklyKm - longKm - easyCount * MIN_EASY_KM,
-        0,
-      );
-      const fitScale =
-        qualityTotal > 0
-          ? Math.max(0.4, Math.min(1, available / qualityTotal))
-          : 1;
-      qualityTotal *= fitScale;
+    let qualityTotal = qualityTotalWith(qualityScale);
+    let easyRemaining = weeklyKm - longKm - qualityTotal;
+
+    const shrinkQualityToFit = (available: number) => {
+      if (qualityTotal <= 0 || available >= qualityTotal) return;
+
+      const fixed = qualityTotalWith(0);
+      const variable = qualityTotal - fixed;
+      if (variable <= 0) return;
+      if (available <= fixed) {
+        qualityScale = Math.min(qualityScale, 0.25);
+        qualityTotal = qualityTotalWith(qualityScale);
+      } else {
+        const shrinkRatio = (available - fixed) / variable;
+        qualityScale = Math.max(0.25, qualityScale * shrinkRatio);
+        qualityTotal = qualityTotalWith(qualityScale);
+      }
+
       easyRemaining = weeklyKm - longKm - qualityTotal;
+    };
+
+    const targetEasyKm = pattern?.easyKm ?? 0;
+    if (easyCount > 0 && targetEasyKm > 0) {
+      shrinkQualityToFit(weeklyKm - longKm - targetEasyKm * unitWeight);
     }
 
-    const recoveryWeight = 0.75;
-    const unitWeight = easyDays.length + recoveryDays.length * recoveryWeight;
+    if (easyCount > 0 && easyRemaining < easyCount * MIN_EASY_KM) {
+      shrinkQualityToFit(weeklyKm - longKm - easyCount * MIN_EASY_KM);
+    }
+
     const perUnitKm =
       unitWeight > 0 ? Math.max(0, easyRemaining) / unitWeight : 0;
 
@@ -689,7 +768,9 @@ export class TrainingPlansService {
         const workout =
           role === 'quality1' ? workouts.primary : workouts.secondary;
         if (workout) {
-          sessions.push(this.qualitySession(day, workout, paces, isDeload));
+          sessions.push(
+            this.qualitySession(day, workout, paces, isDeload, qualityScale),
+          );
           continue;
         }
       }
@@ -713,7 +794,38 @@ export class TrainingPlansService {
       );
     }
 
-    return sessions;
+    return sessions.map((session) => {
+      if (
+        session.notes &&
+        qualityScale < 0.999 &&
+        session.type === 'interval'
+      ) {
+        session.notes = session.notes
+          .replace(
+            /(\d+) repetições de ([\d.,]+)(km|m)/,
+            (_match, reps: string, size: string, unit: string) =>
+              `${Math.max(2, Math.round(Number(reps) * qualityScale))} repetições de ${size}${unit}`,
+          )
+          .replace(
+            /(\d+)x([\d.,]+)m no pace/,
+            (_match, reps: string, size: string) =>
+              `${Math.max(1, Math.round(Number(reps) * qualityScale))}x${size}m no pace`,
+          );
+      }
+
+      const zone = zoneForSessionType(session.type);
+      if (!zone) return session;
+
+      const paceText = this.formatPace(session.plannedPace);
+      const pacePart = ['interval', 'tempo', 'fartlek', 'race'].includes(
+        session.type,
+      )
+        ? `${session.type === 'interval' ? 'Pace médio por tiro' : 'Pace alvo'}: ${paceText}/km.`
+        : `Ritmo de conversa: ${paceText}/km.`;
+
+      session.notes = `${session.notes} ${pacePart} ${formatZone(zone, maxHeartRate)}.`;
+      return session;
+    });
   }
 
   private qualitySession(
@@ -721,9 +833,10 @@ export class TrainingPlansService {
     workout: QualityWorkout,
     paces: PaceSet,
     isDeload: boolean,
+    qualityScale: number,
   ): TrainingSession {
     const totals = this.qualityTotals(workout, paces);
-    const scale = isDeload ? 0.6 : 1;
+    const scale = (isDeload && !workout.fromHistory ? 0.6 : 1) * qualityScale;
     const mainKm = totals.mainKm * scale;
     const distance = Math.max(
       3000,
@@ -797,9 +910,20 @@ export class TrainingPlansService {
     pattern: TrainingPattern | undefined,
     level: AthleteLevel,
     phase: PlanPhase,
+    isDeload: boolean,
   ): { primary: QualityWorkout; secondary?: QualityWorkout } {
     const fit = (workout?: QualityWorkout): QualityWorkout | undefined => {
-      if (!workout || workout.key.startsWith('race-specific')) return workout;
+      if (!workout) return undefined;
+      if (workout.key.startsWith('race-specific')) return workout;
+
+      const fromHistory = this.historyWorkoutFor(
+        workout,
+        pattern,
+        paces,
+        phase,
+        isDeload,
+      );
+      if (fromHistory) return fromHistory;
 
       const typical = pattern?.typicalQuality[workout.type];
       if (!typical || typical.km <= 0) return workout;
@@ -837,6 +961,27 @@ export class TrainingPlansService {
       primary: fit(workouts.primary) ?? workouts.primary,
       secondary: fit(workouts.secondary),
     };
+  }
+
+  private historyWorkoutFor(
+    workout: QualityWorkout,
+    pattern: TrainingPattern | undefined,
+    paces: PaceSet,
+    phase: PlanPhase,
+    isDeload: boolean,
+  ): QualityWorkout | undefined {
+    if (workout.type !== 'interval') return undefined;
+
+    const typical = pattern?.typicalQuality.interval;
+    const repSet = typical?.repSets?.[0];
+    if (!typical || !repSet || !typical.repPace) return undefined;
+
+    if (typical.repPace >= paces.threshold - 10) return undefined;
+
+    const plannedMainKm = repSet.count * repSet.sizeKm;
+    if (typical.km > 0 && plannedMainKm > typical.km * 1.35) return undefined;
+
+    return historyIntervalWorkout({ repSet, phase, deload: isDeload });
   }
 
   private describeTrainingPattern(
@@ -1168,7 +1313,7 @@ export class TrainingPlansService {
         intervalBase + 5,
       ),
       MIN_PACE + 10,
-      480,
+      470,
     );
 
     const interval = this.clamp(
@@ -1177,8 +1322,13 @@ export class TrainingPlansService {
       430,
     );
 
-    const easy = this.clamp(threshold + 65, 300, 450);
-    const recovery = this.clamp(easy + 20, 320, 480);
+    const demonstratedEasy = profile.pattern?.easyPace;
+    const easyTarget =
+      demonstratedEasy && demonstratedEasy > threshold
+        ? demonstratedEasy
+        : threshold + 65;
+    const easy = this.clamp(Math.max(easyTarget, threshold + 35), 300, 520);
+    const recovery = this.clamp(easy + 20, 320, 540);
 
     const predictedGoalPace = this.estimateGoalPace(
       goal,
@@ -1297,14 +1447,48 @@ export class TrainingPlansService {
       .map((d) => FULL_TO_SHORT[d] ?? d)
       .filter((d) => d in DAY_ORDER);
 
-    if (days.length > 0) return Array.from(new Set(days));
+    let resolved: string[];
 
-    const preferred = (pattern?.preferredRunDays ?? []).filter(
-      (d) => d in DAY_ORDER,
-    );
-    if (preferred.length > 0) return preferred;
+    if (days.length > 0) {
+      resolved = Array.from(new Set(days));
+    } else {
+      const preferred = (pattern?.preferredRunDays ?? []).filter(
+        (d) => d in DAY_ORDER,
+      );
+      resolved =
+        preferred.length > 0
+          ? preferred
+          : this.defaultRunDays(goal.daysPerWeek);
+    }
 
-    return ['Seg', 'Ter', 'Qui', 'Sex'];
+    const longDay = goal.longRunDay
+      ? (FULL_TO_SHORT[goal.longRunDay] ?? goal.longRunDay)
+      : undefined;
+
+    if (
+      longDay &&
+      longDay in DAY_ORDER &&
+      !resolved.includes(longDay) &&
+      resolved.length < 7
+    ) {
+      resolved = [...resolved, longDay];
+    }
+
+    return resolved;
+  }
+
+  private defaultRunDays(daysPerWeek?: number): string[] {
+    const desired = Math.max(2, Math.min(Math.round(daysPerWeek ?? 4), 7));
+    const templates: Record<number, string[]> = {
+      2: ['Ter', 'Sáb'],
+      3: ['Seg', 'Qua', 'Sáb'],
+      4: ['Seg', 'Ter', 'Qui', 'Sex'],
+      5: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+      6: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'],
+      7: [...ALL_DAY_SHORTS],
+    };
+
+    return templates[desired] ?? templates[4];
   }
 
   private resolveLongRunDay(

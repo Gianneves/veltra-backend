@@ -1,5 +1,6 @@
 import {
   ActivityFeatures,
+  RepSet,
   RunType,
   classifyRunType,
 } from './activity-features';
@@ -13,6 +14,7 @@ export interface TypicalQuality {
   pace: number;
   repPace?: number;
   reps: string[];
+  repSets: RepSet[];
 }
 
 export interface TrainingPattern {
@@ -30,7 +32,9 @@ export interface TrainingPattern {
   typeMix: Record<RunType, number>;
   typicalQuality: Partial<Record<QualityRunType, TypicalQuality>>;
   easyPace?: number;
+  easyKm?: number;
   longRun?: { km: number; pace: number };
+  maxHeartRate?: number;
 }
 
 const DAY_SHORTS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -155,7 +159,9 @@ export function buildTrainingPattern(
     typeMix: typeMixOf(classified.map((item) => item.type)),
     typicalQuality: typicalQualityOf(classified),
     easyPace: easyPaceOf(classified),
+    easyKm: easyKmOf(classified),
     longRun: longRunOf(classified),
+    maxHeartRate: maxHeartRateOf(features),
   };
 }
 
@@ -265,10 +271,36 @@ function typicalQualityOf(
       pace: Math.round(median(runs.map((item) => item.features.pace))),
       repPace: repPaces.length > 0 ? Math.round(median(repPaces)) : undefined,
       reps: topRepSizes(runs.map((item) => item.features.repSizes)),
+      repSets: topRepSets(runs.map((item) => item.features.repSets)),
     };
   }
 
   return result;
+}
+
+function topRepSets(repLists: RepSet[][]): RepSet[] {
+  const counts = new Map<string, { set: RepSet; count: number }>();
+
+  for (const reps of repLists) {
+    for (const rep of reps) {
+      const key = `${rep.count}x${rep.size}`;
+      const current = counts.get(key);
+      if (current) {
+        current.count += 1;
+      } else {
+        counts.set(key, { set: rep, count: 1 });
+      }
+    }
+  }
+
+  return [...counts.values()]
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        b.set.count * b.set.sizeKm - a.set.count * a.set.sizeKm,
+    )
+    .slice(0, 2)
+    .map((entry) => entry.set);
 }
 
 function topRepSizes(repLists: string[][]): string[] {
@@ -293,6 +325,25 @@ function easyPaceOf(
   if (runs.length < 2) return undefined;
 
   return Math.round(median(runs.map((item) => item.features.pace)));
+}
+
+function easyKmOf(
+  classified: { features: ActivityFeatures; type: RunType }[],
+): number | undefined {
+  const runs = classified.filter((item) => item.type === 'easy');
+  if (runs.length < 2) return undefined;
+
+  return round1(median(runs.map((item) => item.features.distanceKm)));
+}
+
+function maxHeartRateOf(features: ActivityFeatures[]): number | undefined {
+  const values = features
+    .map((item) => item.maxHeartRate)
+    .filter((value): value is number => value !== undefined && value > 0);
+
+  if (values.length === 0) return undefined;
+
+  return Math.max(...values);
 }
 
 function longRunOf(

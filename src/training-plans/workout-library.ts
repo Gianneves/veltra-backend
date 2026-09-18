@@ -1,5 +1,5 @@
 import type { AthleteLevel } from './athlete-profile.service';
-import { repSizesFromText } from './activity-features';
+import { RepSet, repSizesFromText } from './activity-features';
 
 export type QualityType = 'interval' | 'tempo' | 'fartlek';
 
@@ -22,6 +22,7 @@ export interface QualityWorkout {
   paceRef: PaceRef;
   paceAdjust: number;
   notes: string;
+  fromHistory?: boolean;
 }
 
 export interface WeekWorkouts {
@@ -576,4 +577,47 @@ function pickSecondary(
   );
 
   return ordered[phaseWeekIndex % ordered.length];
+}
+
+export function historyIntervalWorkout(opts: {
+  repSet: RepSet;
+  phase: PlanPhase;
+  deload: boolean;
+}): QualityWorkout {
+  const { repSet, phase, deload } = opts;
+  const baseReps = Math.max(2, Math.min(Math.round(repSet.count), 20));
+  let reps = baseReps;
+  let paceAdjust = 0;
+
+  if (deload) {
+    reps = Math.max(2, baseReps - 2);
+    paceAdjust = 15;
+  } else if (phase === 'build') {
+    reps = Math.min(baseReps + 1, 14);
+    paceAdjust = -3;
+  } else if (phase === 'peak') {
+    reps = Math.min(baseReps + 2, 14);
+    paceAdjust = -6;
+  }
+
+  return {
+    key: `history-interval-${reps}x${repSet.size}`,
+    type: 'interval',
+    label: `${reps}x${repSet.size}`,
+    mainKm: reps * repSet.sizeKm,
+    paceRef: 'interval',
+    paceAdjust,
+    notes: `${reps} repetições de ${repSet.size} em ritmo forte e controlado, com recuperação ativa entre elas. Alvo: pace médio por tiro {pace} — mantenha o esforço parelho do início ao fim.`,
+    fromHistory: true,
+  };
+}
+
+export function qualityMainScale(
+  weeklyKm: number,
+  qualityMainKm: number,
+  maxRatio: number,
+): number {
+  const maxQuality = weeklyKm * maxRatio;
+  if (qualityMainKm <= 0 || qualityMainKm <= maxQuality) return 1;
+  return Math.max(0, maxQuality / qualityMainKm);
 }
