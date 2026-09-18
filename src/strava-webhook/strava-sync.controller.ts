@@ -8,6 +8,7 @@ import {
 import type { Request } from 'express';
 import { ActivitiesService } from 'src/activities/activities.service';
 import { AuthSessionService } from 'src/auth/auth-session.service';
+import { InsightsService } from 'src/insights/insights.service';
 import { StravaService } from 'src/strava/strava.service';
 import { ActivityMatcherService } from 'src/training-plans/activity-matcher.service';
 import { UsersService } from 'src/users/users.service';
@@ -26,6 +27,7 @@ export class StravaSyncController {
     private readonly matcher: ActivityMatcherService,
     private readonly tokenService: StravaTokenService,
     private readonly webhookService: StravaWebhookService,
+    private readonly insightsService: InsightsService,
     private readonly sessionService: AuthSessionService,
   ) {}
 
@@ -64,6 +66,7 @@ export class StravaSyncController {
       );
 
       const result = await this.matcher.matchActivity(user.id, saved);
+      void this.insightsService.generateIfMissing(saved, user.id);
       synced += 1;
       if (result.matched) matched += 1;
     }

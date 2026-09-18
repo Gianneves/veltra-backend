@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { ChatOpenAI, OpenAIEmbeddings } from '@langchain/openai';
-import { HumanMessage, SystemMessage } from '@langchain/core/messages';
+import {
+  AIMessage,
+  HumanMessage,
+  SystemMessage,
+} from '@langchain/core/messages';
 
 export interface PlanTip {
   day?: string;
@@ -19,8 +23,137 @@ export interface PlanReview {
   weeks: PlanWeekReview[];
 }
 
+export interface ActivityInsightContent {
+  summary: string;
+  performance: string;
+  workoutType: string;
+  plan: string | null;
+  tips: string[];
+}
+
+export interface CoachProposal {
+  session: number;
+  changes: {
+    type?: string;
+    plannedDistance?: number;
+    plannedPace?: number;
+    day?: string;
+    notes?: string;
+  };
+  reason: string;
+}
+
+export interface CoachReplyResult {
+  text: string;
+  proposal: CoachProposal | null;
+}
+
 const PLAN_REVIEW_TIMEOUT_MS = 45000;
 const ACTIVITY_MATCH_TIMEOUT_MS = 20000;
+const ACTIVITY_INSIGHT_TIMEOUT_MS = 30000;
+const COACH_REPLY_TIMEOUT_MS = 60000;
+
+const PROPOSAL_PATTERN = /<proposta>([\s\S]*?)<\/proposta>/i;
+
+function sanitizeChanges(raw: unknown): CoachProposal['changes'] {
+  const changes: CoachProposal['changes'] = {};
+  if (!raw || typeof raw !== 'object') return changes;
+
+  const record = raw as Record<string, unknown>;
+
+  if (typeof record.type === 'string') changes.type = record.type;
+  if (typeof record.plannedDistance === 'number') {
+    changes.plannedDistance = record.plannedDistance;
+  }
+  if (typeof record.plannedPace === 'number') {
+    changes.plannedPace = record.plannedPace;
+  }
+  if (typeof record.day === 'string') changes.day = record.day;
+  if (typeof record.notes === 'string') changes.notes = record.notes;
+
+  return changes;
+}
+
+export function splitCoachReply(text: string): CoachReplyResult {
+  const match = text.match(PROPOSAL_PATTERN);
+  if (!match) return { text: text.trim(), proposal: null };
+
+  const cleaned = text.replace(PROPOSAL_PATTERN, '').trim();
+
+  try {
+    const parsed = JSON.parse(match[1].trim()) as {
+      session?: unknown;
+      changes?: unknown;
+      reason?: unknown;
+    };
+
+    if (
+      typeof parsed.session !== 'number' ||
+      !Number.isFinite(parsed.session)
+    ) {
+      console.warn(
+        'Bloco de proposta sem sessão numérica:',
+        match[1].trim().slice(0, 300),
+      );
+      return { text: cleaned, proposal: null };
+    }
+
+    return {
+      text: cleaned,
+      proposal: {
+        session: parsed.session,
+        changes: sanitizeChanges(parsed.changes),
+        reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+      },
+    };
+  } catch {
+    console.warn(
+      'Bloco de proposta inválido do coach:',
+      match[1].trim().slice(0, 300),
+    );
+    return { text: cleaned, proposal: null };
+  }
+}
+
+export function parseActivityInsight(
+  text: string,
+): ActivityInsightContent | null {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1)) as {
+      summary?: unknown;
+      performance?: unknown;
+      workoutType?: unknown;
+      plan?: unknown;
+      tips?: unknown;
+    };
+
+    if (typeof parsed.summary !== 'string') return null;
+    if (typeof parsed.performance !== 'string') return null;
+    if (typeof parsed.workoutType !== 'string') return null;
+
+    const tips = Array.isArray(parsed.tips)
+      ? parsed.tips
+          .filter((tip): tip is string => typeof tip === 'string')
+          .map((tip) => tip.trim())
+          .filter((tip) => tip.length > 0)
+          .slice(0, 6)
+      : [];
+
+    return {
+      summary: parsed.summary,
+      performance: parsed.performance,
+      workoutType: parsed.workoutType,
+      plan: typeof parsed.plan === 'string' ? parsed.plan : null,
+      tips,
+    };
+  } catch {
+    return null;
+  }
+}
 
 @Injectable()
 export class AiService {
@@ -53,6 +186,102 @@ export class AiService {
     const insight = await llm.invoke(messages);
 
     return insight.content as string;
+  }
+
+  async generateCoachReplyStream(
+    systemPrompt: string,
+    history: { role: 'user' | 'coach'; content: string }[],
+    userMessage: string,
+    onToken: (token: string) => void,
+  ): Promise<CoachReplyResult | null> {
+    if (!process.env.OPENAI_API_KEY) return null;
+
+    const llm = new ChatOpenAI({
+      model: 'gpt-4o-mini',
+      temperature: 0.3,
+    });
+
+    const messages = [
+      new SystemMessage(systemPrompt),
+      ...history.map((message) =>
+        message.role === 'user'
+          ? new HumanMessage(message.content)
+          : new AIMessage(message.content),
+      ),
+      new HumanMessage(userMessage),
+    ];
+
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      COACH_REPLY_TIMEOUT_MS,
+    );
+
+    let full = '';
+
+    try {
+      const stream = await llm.stream(messages, {
+        signal: controller.signal,
+      });
+
+      for await (const chunk of stream) {
+        const token = typeof chunk.content === 'string' ? chunk.content : '';
+        if (!token) continue;
+        full += token;
+        onToken(token);
+      }
+
+      return splitCoachReply(full);
+    } catch (err) {
+      console.error('Erro ao gerar resposta do coach:', (err as Error).message);
+      return full.trim() ? splitCoachReply(full) : null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async generateActivityInsight(
+    context: string,
+  ): Promise<ActivityInsightContent | null> {
+    if (!process.env.OPENAI_API_KEY) return null;
+
+    const llm = new ChatOpenAI({
+      model: 'gpt-4o-mini',
+      temperature: 0.3,
+    });
+
+    const systemMsg = new SystemMessage(
+      `Você é o Veltra Coach, treinador de corrida experiente. Analise a corrida realizada pelo atleta usando os dados fornecidos.
+Responda SOMENTE com JSON válido, sem markdown, no formato:
+{"summary":"...","performance":"...","workoutType":"...","plan":"..." ou null,"tips":["..."]}
+Regras: português do Brasil; "summary" com 2 frases resumindo a corrida; "performance" com 2-3 frases sobre pace, distância e esforço (cite frequência cardíaca, cadência ou elevação quando existirem), comparando com o perfil recente do atleta quando disponível; "workoutType" com 1-2 frases explicando o tipo de treino executado (intervalado, tempo run, fartlek, longão ou leve) e sua função no treinamento; "plan" com 2-3 frases avaliando o cumprimento do treino planejado e a aderência informada, ou null se não houver treino planejado vinculado; "tips" com 2 a 4 dicas curtas e práticas para as próximas corridas, cada uma com no máximo 160 caracteres. Seja honesto e construtivo, aponte o que melhorar com cautela e não invente dados que não estão no contexto.`,
+    );
+    const humanMsg = new HumanMessage(context);
+
+    try {
+      const response = await Promise.race([
+        llm.invoke([systemMsg, humanMsg]),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Timeout ao gerar insight da corrida')),
+            ACTIVITY_INSIGHT_TIMEOUT_MS,
+          ),
+        ),
+      ]);
+
+      const text =
+        typeof response.content === 'string'
+          ? response.content
+          : JSON.stringify(response.content);
+
+      return parseActivityInsight(text);
+    } catch (err) {
+      console.error(
+        'Erro ao gerar insight da corrida com IA:',
+        (err as Error).message,
+      );
+      return null;
+    }
   }
 
   async generatePlanReview(context: string): Promise<PlanReview | null> {

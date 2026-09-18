@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ActivitiesService } from 'src/activities/activities.service';
 import { CreateActivityDto } from 'src/activities/dto/create-activity.dto';
+import { InsightsService } from 'src/insights/insights.service';
 import { RedisService } from 'src/redis/redis.service';
 import { StravaService } from 'src/strava/strava.service';
 import { ActivityMatcherService } from 'src/training-plans/activity-matcher.service';
@@ -31,6 +32,7 @@ export class StravaWebhookService implements OnModuleInit, OnModuleDestroy {
     private readonly activitiesService: ActivitiesService,
     private readonly matcher: ActivityMatcherService,
     private readonly tokenService: StravaTokenService,
+    private readonly insightsService: InsightsService,
     private readonly redisService: RedisService,
   ) {}
 
@@ -190,6 +192,7 @@ export class StravaWebhookService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.matcher.matchActivity(user.id, saved);
+    void this.insightsService.generateIfMissing(saved, user.id);
   }
 
   toActivityDto(detail: Activity): CreateActivityDto {

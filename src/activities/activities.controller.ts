@@ -12,12 +12,14 @@ import type { Request } from 'express';
 import { ActivitiesService } from './activities.service';
 import { CreateActivityDto } from './dto/create-activity.dto';
 import { AuthSessionService } from 'src/auth/auth-session.service';
+import { InsightsService } from 'src/insights/insights.service';
 import type { User } from 'src/users/entities/user.entity';
 
 @Controller('activities')
 export class ActivitiesController {
   constructor(
     private readonly activitiesService: ActivitiesService,
+    private readonly insightsService: InsightsService,
     private readonly sessionService: AuthSessionService,
   ) {}
 
@@ -66,5 +68,29 @@ export class ActivitiesController {
     }
 
     return activity;
+  }
+
+  @Get(':id/insight')
+  async findInsight(@Param('id') id: string, @Req() req: Request) {
+    const userId = await this.sessionService.resolveUserId(req);
+    const activity = await this.activitiesService.findOneForUser(id, userId);
+
+    if (!activity) {
+      throw new NotFoundException(`activity ${id} not found`);
+    }
+
+    return this.insightsService.getForActivity(activity.id, userId);
+  }
+
+  @Post(':id/insight')
+  async generateInsight(@Param('id') id: string, @Req() req: Request) {
+    const userId = await this.sessionService.resolveUserId(req);
+    const activity = await this.activitiesService.findOneForUser(id, userId);
+
+    if (!activity) {
+      throw new NotFoundException(`activity ${id} not found`);
+    }
+
+    return this.insightsService.generateForActivity(activity, userId);
   }
 }

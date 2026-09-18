@@ -43,16 +43,20 @@ export class ActivitiesService {
 
     const savedActivity = await this.activityRepository.save(activity);
 
-    if (generateAI) {
-      this.generateInsightAndEmbedding(savedActivity).catch((err: Error) =>
-        console.error('Erro ao gerar insight/embedding:', err.message),
+    if (generateAI && user) {
+      this.generateInsightAndEmbedding(savedActivity, user.id).catch(
+        (err: Error) =>
+          console.error('Erro ao gerar insight/embedding:', err.message),
       );
     }
 
     return savedActivity;
   }
 
-  private async generateInsightAndEmbedding(activity: Activity) {
+  private async generateInsightAndEmbedding(
+    activity: Activity,
+    userId: string,
+  ) {
     const prompt = this.buildActivityPrompt(activity);
 
     try {
@@ -64,11 +68,7 @@ export class ActivitiesService {
       console.error('Falha ao gerar embedding:', (error as Error).message);
     }
 
-    try {
-      await this.insightsService.createFromActivity(activity);
-    } catch (error: unknown) {
-      console.error('Falha ao gerar insight:', (error as Error).message);
-    }
+    await this.insightsService.generateIfMissing(activity, userId);
   }
 
   private buildActivityPrompt(activity: Activity): string {

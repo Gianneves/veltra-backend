@@ -51,6 +51,9 @@ function createService(options?: {
     getAccessToken: jest.fn(() => Promise.resolve('token')),
     invalidate: jest.fn(() => Promise.resolve()),
   };
+  const insightsService = {
+    generateIfMissing: jest.fn(() => Promise.resolve()),
+  };
   const redisService = {
     setNx: jest.fn(() => Promise.resolve(true)),
     lpush: jest.fn(() => Promise.resolve()),
@@ -63,6 +66,7 @@ function createService(options?: {
     activitiesService as any,
     matcher as any,
     tokenService as any,
+    insightsService as any,
     redisService as any,
   );
 
@@ -73,6 +77,7 @@ function createService(options?: {
     activitiesService,
     matcher,
     tokenService,
+    insightsService,
     redisService,
   };
 }
@@ -127,8 +132,13 @@ describe('StravaWebhookService', () => {
   });
 
   it('processa create: busca detalhe, salva e vincula', async () => {
-    const { service, activitiesService, matcher, stravaService } =
-      createService();
+    const {
+      service,
+      activitiesService,
+      matcher,
+      stravaService,
+      insightsService,
+    } = createService();
 
     await service.handleEvent(activityEvent());
 
@@ -140,6 +150,10 @@ describe('StravaWebhookService', () => {
     expect(matcher.matchActivity).toHaveBeenCalledWith(
       'user-1',
       expect.objectContaining({ id: 'activity-1' }),
+    );
+    expect(insightsService.generateIfMissing).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'activity-1' }),
+      'user-1',
     );
   });
 
