@@ -189,7 +189,16 @@ export class TrainingPlansService {
     });
     if (!session) return null;
 
+    if (data.day && DAY_ORDER[data.day] !== undefined) {
+      session.dayOrder = DAY_ORDER[data.day];
+    }
+
     Object.assign(session, data);
+
+    if (session.type === 'rest') {
+      session.plannedPace = 0;
+    }
+
     return this.sessionRepository.save(session);
   }
 

@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { TrainingPlansService } from './training-plans.service';
+import { UpdateTrainingSessionDto } from './dto/update-training-session.dto';
 import { AuthSessionService } from 'src/auth/auth-session.service';
 
 @Controller('training-plans')
@@ -69,14 +70,7 @@ export class TrainingPlansController {
   async updateSession(
     @Param('planId') planId: string,
     @Param('sessionId') sessionId: string,
-    @Body()
-    data: {
-      plannedDistance?: number;
-      plannedPace?: number;
-      type?: string;
-      day?: string;
-      notes?: string;
-    },
+    @Body() data: UpdateTrainingSessionDto,
     @Req() req: Request,
   ) {
     const userId = await this.sessionService.resolveUserId(req);
