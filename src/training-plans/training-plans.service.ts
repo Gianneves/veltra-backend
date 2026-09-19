@@ -289,7 +289,12 @@ export class TrainingPlansService {
 
     await this.deleteFuturePlansForUser(goal.userId, startWeek);
 
-    const profile = await this.athleteProfileService.build(goal.userId, goal);
+    const profile = await this.athleteProfileService.build(
+      goal.userId,
+      goal,
+      new Date(),
+      { recentOnly: true },
+    );
     const pattern = profile.pattern;
     const preferences = this.buildWorkoutPreferences(pattern);
     const raceKm = goal.targetDistance / 1000;
@@ -328,6 +333,7 @@ export class TrainingPlansService {
       (profile.level === 'intermediate' || profile.level === 'advanced');
     let patternNote: string | undefined;
     const ageNote = planAgeAdjustment(profile.age)?.reason;
+    const calibrationNote = this.describePlanBasis(profile);
 
     const plans: TrainingPlan[] = [];
     const summaries: WeekSummary[] = [];
@@ -425,7 +431,7 @@ export class TrainingPlansService {
       });
     }
 
-    const firstWeekNotes = [patternNote, targetNote, ageNote]
+    const firstWeekNotes = [calibrationNote, patternNote, targetNote, ageNote]
       .filter((part): part is string => !!part)
       .join('\n\n');
 
@@ -1066,6 +1072,23 @@ export class TrainingPlansService {
     }
 
     return base;
+  }
+
+  private describePlanBasis(profile: AthleteProfile): string | undefined {
+    const recent = profile.recentForm;
+    const testPace = profile.threeKm
+      ? ` Teste de 3 km: ${this.formatPace(profile.threeKm.pace)}/km.`
+      : '';
+
+    if (recent?.hasData) {
+      return `Plano calibrado pelas suas últimas ${recent.weeks} semanas de treino (${recent.weeklyKm} km/semana, longão de ${recent.longestKm} km, ${recent.runs} corridas).${testPace}`;
+    }
+
+    if (profile.threeKm) {
+      return `Sem corridas nas últimas 3 semanas: o plano parte do seu teste de 3 km (${this.formatPace(profile.threeKm.pace)}/km) e das suas escolhas, com progressão conservadora.`;
+    }
+
+    return undefined;
   }
 
   private longRunSession(opts: {
@@ -1747,6 +1770,29 @@ export class TrainingPlansService {
         idade: profile.age ?? null,
         fcMaximaPrevista: profile.predictedMaxHeartRate ?? null,
         limitePorIdade: planAgeAdjustment(profile.age)?.reason ?? null,
+        ultimas3Semanas: profile.recentForm?.hasData
+          ? {
+              janelaInicio: profile.recentForm.windowStart.slice(0, 10),
+              janelaFim: profile.recentForm.windowEnd.slice(0, 10),
+              semanas: profile.recentForm.weeks,
+              corridas: profile.recentForm.runs,
+              kmPorSemana: profile.recentForm.weeklyKm,
+              corridasPorSemana: profile.recentForm.runsPerWeek,
+              longaoKm: profile.recentForm.longestKm,
+            }
+          : null,
+        teste3Km: profile.threeKm
+          ? {
+              tempoSegundos: profile.threeKm.time,
+              paceSegKm: profile.threeKm.pace,
+              nivelEstimado: profile.threeKm.level,
+            }
+          : null,
+        baseDoPlano: profile.recentForm?.hasData
+          ? 'ultimas3Semanas+teste3Km'
+          : profile.threeKm
+            ? 'teste3Km+preferencias'
+            : 'historico',
       },
       historicoDoAtleta: pattern?.hasData
         ? {

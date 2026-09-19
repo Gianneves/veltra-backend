@@ -17,6 +17,24 @@ import {
 
 export type AthleteLevel = 'beginner' | 'novice' | 'intermediate' | 'advanced';
 
+export interface RecentForm {
+  windowStart: string;
+  windowEnd: string;
+  weeks: number;
+  hasData: boolean;
+  runs: number;
+  weeklyKm: number;
+  peakWeeklyKm: number;
+  runsPerWeek: number;
+  longestKm: number;
+}
+
+export interface ThreeKmTest {
+  time: number;
+  pace: number;
+  level: AthleteLevel;
+}
+
 export interface AthleteProfile {
   level: AthleteLevel;
   hasData: boolean;
@@ -34,10 +52,13 @@ export interface AthleteProfile {
   predictedMaxHeartRate?: number;
   runsPerWeek: number;
   pattern: TrainingPattern;
+  recentForm: RecentForm;
+  threeKm?: ThreeKmTest;
 }
 
 const EFFORT_WINDOW_DAYS = 180;
-const LONG_RUN_WINDOW_DAYS = 90;
+const RECENT_WINDOW_WEEKS = 3;
+const RECENT_MIN_RUNS = 3;
 const MIN_PACE_SEC_PER_KM = 150;
 const MAX_PACE_SEC_PER_KM = 600;
 
@@ -66,6 +87,7 @@ export class AthleteProfileService {
     userId: string,
     goal?: Goal,
     now: Date = new Date(),
+    options?: { recentOnly?: boolean },
   ): Promise<AthleteProfile> {
     const effortSince = this.daysAgo(now, EFFORT_WINDOW_DAYS);
     const user = await this.userRepository.findOne({
@@ -89,44 +111,65 @@ export class AthleteProfileService {
         a.moving_time > 0,
     );
 
-    const longSince = this.daysAgo(now, LONG_RUN_WINDOW_DAYS);
-    const longRuns = runs.filter(
-      (a) => a.start_date && a.start_date >= longSince,
-    );
+    const recentRuns = this.recentRunsOf(runs, now);
+    const recentForm = this.recentFormOf(recentRuns, now);
+    const useRecent = recentForm.hasData;
+    const ignoreHistory = !!options?.recentOnly && !useRecent;
 
-    const longest = longRuns.reduce<Activity | undefined>(
+    const basisRuns = ignoreHistory ? [] : useRecent ? recentRuns : runs;
+
+    const longest = basisRuns.reduce<Activity | undefined>(
       (best, a) => (!best || a.distance > best.distance ? a : best),
       undefined,
     );
-
     const longestRunKm = longest ? longest.distance / 1000 : 0;
     const longestRunPace = longest ? this.paceOf(longest) : undefined;
 
     const goalLongestKm = goal?.longestRunDistance
       ? goal.longestRunDistance / 1000
       : 0;
-    const weeklyTotals = this.weeklyTotals(runs, now);
-    const recentWeeklyKm = this.median(weeklyTotals.slice(0, 4));
-    const peakWeeklyKm =
-      weeklyTotals.length > 0 ? Math.max(...weeklyTotals) : 0;
+    const weeklyTotals = this.weeklyTotals(basisRuns, now);
+    const recentWeeklyKm = useRecent
+      ? recentForm.weeklyKm
+      : this.median(weeklyTotals.slice(0, 4));
+    const peakWeeklyKm = useRecent
+      ? recentForm.peakWeeklyKm
+      : weeklyTotals.length > 0
+        ? Math.max(...weeklyTotals)
+        : 0;
     const typicalWeeklyKm = longestRunKm > 0 ? longestRunKm / 0.42 : 0;
 
-    const effectiveLongestKm = Math.max(longestRunKm, goalLongestKm);
-    const effectiveWeeklyKm = Math.max(recentWeeklyKm, goalLongestKm * 2.2);
     const pattern =
-      runs.length > 0
+      basisRuns.length > 0
         ? buildTrainingPattern(
-            runs.map((run) => buildActivityFeatures(run)),
-            { now },
+            basisRuns.map((run) => buildActivityFeatures(run)),
+            {
+              now: useRecent ? this.weekStart(now) : now,
+              weeks: useRecent ? RECENT_WINDOW_WEEKS : undefined,
+            },
           )
         : emptyTrainingPattern();
 
+    const effectiveLongestKm = Math.max(longestRunKm, goalLongestKm);
+    const effectiveWeeklyKm = Math.max(recentWeeklyKm, goalLongestKm * 2.2);
     const levelFromVolume = this.classify(
       effectiveLongestKm,
       effectiveWeeklyKm,
     );
-    const threeKmLevel =
-      runs.length < 3 ? this.classifyFromThreeKm(goal?.threeKmTime) : undefined;
+    const threeKmLevel = this.classifyFromThreeKm(goal?.threeKmTime);
+    const threeKm =
+      goal?.threeKmTime && goal.threeKmTime > 0 && threeKmLevel
+        ? {
+            time: goal.threeKmTime,
+            pace: this.round(goal.threeKmTime / 3, 1),
+            level: threeKmLevel,
+          }
+        : undefined;
+    const level = ignoreHistory
+      ? (threeKm?.level ?? levelFromVolume)
+      : threeKm
+        ? this.conservativeLevel(levelFromVolume, threeKm.level)
+        : levelFromVolume;
     const maxHeartRate = runs.reduce(
       (best, run) =>
         run.max_heartrate && run.max_heartrate > best
@@ -136,23 +179,101 @@ export class AthleteProfileService {
     );
 
     return {
-      level: threeKmLevel ?? levelFromVolume,
-      hasData: runs.length >= 3,
+      level,
+      hasData: !ignoreHistory && runs.length >= 3,
       recentWeeklyKm: this.round(recentWeeklyKm, 1),
       peakWeeklyKm: this.round(peakWeeklyKm, 1),
       typicalWeeklyKm: this.round(typicalWeeklyKm, 1),
       longestRunKm: this.round(longestRunKm, 1),
       longestRunPace,
-      bestShortPace: this.bestPace(runs, 3000, 5500),
-      bestMediumPace: this.bestPace(runs, 5500, 10500),
-      bestLongPace: this.bestPace(runs, 10500, Infinity),
+      bestShortPace: this.bestPace(basisRuns, 3000, 5500),
+      bestMediumPace: this.bestPace(basisRuns, 5500, 10500),
+      bestLongPace: this.bestPace(basisRuns, 10500, Infinity),
       maxHeartRate: maxHeartRate > 0 ? maxHeartRate : undefined,
       birthDate: user?.birthDate ?? undefined,
       age,
       predictedMaxHeartRate: predictedMaxHeartRate(age),
-      runsPerWeek: this.runsPerWeek(runs, now),
+      runsPerWeek: useRecent
+        ? recentForm.runsPerWeek
+        : ignoreHistory
+          ? 0
+          : this.runsPerWeek(runs, now),
       pattern,
+      recentForm,
+      threeKm,
     };
+  }
+
+  private recentWindowStart(now: Date): Date {
+    const start = this.weekStart(now);
+    start.setDate(start.getDate() - RECENT_WINDOW_WEEKS * 7);
+    return start;
+  }
+
+  private recentRunsOf(runs: Activity[], now: Date): Activity[] {
+    const windowStart = this.recentWindowStart(now);
+    const currentWeek = this.weekStart(now);
+
+    return runs.filter(
+      (a) =>
+        a.start_date &&
+        a.start_date >= windowStart &&
+        a.start_date < currentWeek,
+    );
+  }
+
+  private recentFormOf(recentRuns: Activity[], now: Date): RecentForm {
+    const windowStart = this.recentWindowStart(now);
+    const windowEnd = this.weekStart(now);
+    const weeklyKm = new Array<number>(RECENT_WINDOW_WEEKS).fill(0);
+
+    for (const run of recentRuns) {
+      if (!run.start_date) continue;
+
+      const index = Math.floor(
+        (this.weekStart(run.start_date).getTime() - windowStart.getTime()) /
+          (7 * 24 * 60 * 60 * 1000),
+      );
+
+      if (index >= 0 && index < RECENT_WINDOW_WEEKS) {
+        weeklyKm[index] += run.distance / 1000;
+      }
+    }
+
+    const longest = recentRuns.reduce<Activity | undefined>(
+      (best, a) => (!best || a.distance > best.distance ? a : best),
+      undefined,
+    );
+    const sorted = [...weeklyKm].sort((a, b) => a - b);
+    const middle = sorted[Math.floor(sorted.length / 2)] ?? 0;
+
+    return {
+      windowStart: windowStart.toISOString(),
+      windowEnd: windowEnd.toISOString(),
+      weeks: RECENT_WINDOW_WEEKS,
+      hasData: recentRuns.length >= RECENT_MIN_RUNS,
+      runs: recentRuns.length,
+      weeklyKm: this.round(middle, 1),
+      peakWeeklyKm: this.round(Math.max(...weeklyKm), 1),
+      runsPerWeek: this.round(recentRuns.length / RECENT_WINDOW_WEEKS, 1),
+      longestKm: this.round(longest ? longest.distance / 1000 : 0, 1),
+    };
+  }
+
+  private conservativeLevel(
+    volumeLevel: AthleteLevel,
+    testLevel: AthleteLevel,
+  ): AthleteLevel {
+    const order: AthleteLevel[] = [
+      'beginner',
+      'novice',
+      'intermediate',
+      'advanced',
+    ];
+
+    return order.indexOf(volumeLevel) <= order.indexOf(testLevel)
+      ? volumeLevel
+      : testLevel;
   }
 
   private classifyFromThreeKm(threeKmTime?: number): AthleteLevel | undefined {

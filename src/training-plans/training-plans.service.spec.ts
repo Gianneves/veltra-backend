@@ -48,6 +48,17 @@ function makeProfile(overrides: Partial<AthleteProfile> = {}): AthleteProfile {
     bestLongPace: 365,
     runsPerWeek: 4,
     pattern: emptyTrainingPattern(),
+    recentForm: {
+      windowStart: '2026-08-23T03:00:00.000Z',
+      windowEnd: '2026-09-13T03:00:00.000Z',
+      weeks: 3,
+      hasData: false,
+      runs: 0,
+      weeklyKm: 0,
+      peakWeeklyKm: 0,
+      runsPerWeek: 0,
+      longestKm: 0,
+    },
     ...overrides,
   };
 }
@@ -172,7 +183,12 @@ function createMocks(profile: AthleteProfile) {
     activityMatcher as any,
   );
 
-  return { service, planRepository, sessionRepository };
+  return {
+    service,
+    planRepository,
+    sessionRepository,
+    athleteProfileService,
+  };
 }
 
 async function generate(goal: Goal, profile: AthleteProfile) {
@@ -862,5 +878,67 @@ describe('TrainingPlansService', () => {
         (session.notes ?? '').includes('Pace médio por tiro'),
       ),
     ).toBe(true);
+  });
+
+  it('pede o perfil recente (recentOnly) ao regenerar o plano', async () => {
+    const goal = makeGoal();
+    const mocks = createMocks(makeProfile());
+
+    await mocks.service.regenerateFromGoal(goal, { startDate: START });
+
+    expect(mocks.athleteProfileService.build).toHaveBeenCalledWith(
+      'user-1',
+      goal,
+      expect.any(Date),
+      { recentOnly: true },
+    );
+  });
+
+  it('adiciona nota de calibração das últimas 3 semanas', async () => {
+    const goal = makeGoal({ targetDistance: 10000, threeKmTime: 1200 });
+    const profile = makeProfile({
+      recentForm: {
+        windowStart: '2026-08-23T03:00:00.000Z',
+        windowEnd: '2026-09-13T03:00:00.000Z',
+        weeks: 3,
+        hasData: true,
+        runs: 9,
+        weeklyKm: 28.5,
+        peakWeeklyKm: 32,
+        runsPerWeek: 3,
+        longestKm: 12,
+      },
+      threeKm: { time: 1200, pace: 400, level: 'novice' },
+    });
+
+    const { planRepository } = await generate(goal, profile);
+
+    expect(allCoachNotes(planRepository)).toContain(
+      'Plano calibrado pelas suas últimas 3 semanas de treino',
+    );
+  });
+
+  it('usa o teste de 3 km quando não há corridas nas últimas 3 semanas', async () => {
+    const goal = makeGoal({ targetDistance: 21097, threeKmTime: 1260 });
+    const profile = makeProfile({
+      hasData: false,
+      recentWeeklyKm: 0,
+      peakWeeklyKm: 0,
+      longestRunKm: 0,
+      bestShortPace: undefined,
+      bestMediumPace: undefined,
+      bestLongPace: undefined,
+      runsPerWeek: 0,
+      pattern: emptyTrainingPattern(),
+      threeKm: { time: 1260, pace: 420, level: 'beginner' },
+    });
+
+    const { planRepository, plans } = await generate(goal, profile);
+    const sessions = allSessions(plans).filter((s) => s.type !== 'rest');
+
+    expect(allCoachNotes(planRepository)).toContain(
+      'Sem corridas nas últimas 3 semanas',
+    );
+    expect(sessions.length).toBeGreaterThan(0);
   });
 });

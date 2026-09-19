@@ -280,6 +280,11 @@ export class CoachService {
         `- FC máxima prevista (fórmula de Tanaka): ${profile.predictedMaxHeartRate} bpm`,
       );
     }
+    if (profile?.recentForm?.hasData) {
+      lines.push(
+        `- Últimas 3 semanas: ${profile.recentForm.weeklyKm} km/semana, ${profile.recentForm.runs} corridas, longão de ${profile.recentForm.longestKm} km`,
+      );
+    }
 
     const ageAdjustment = planAgeAdjustment(profile?.age);
     if (ageAdjustment) {
@@ -315,6 +320,16 @@ export class CoachService {
       );
       lines.push(`- Dias de treino por semana: ${goal.daysPerWeek}`);
       if (goal.longRunDay) lines.push(`- Dia do longão: ${goal.longRunDay}`);
+      if (goal.threeKmTime) {
+        lines.push(
+          `- Teste de 3 km: ${this.formatPace(goal.threeKmTime / 3)}/km`,
+        );
+      }
+      if (goal.longestRunDistance) {
+        lines.push(
+          `- Maior distância informada: ${(goal.longestRunDistance / 1000).toFixed(1)} km`,
+        );
+      }
       if (goal.targetTime) {
         lines.push(`- Tempo alvo: ${this.formatDuration(goal.targetTime)}`);
       }

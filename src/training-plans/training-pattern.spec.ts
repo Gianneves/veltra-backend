@@ -164,4 +164,18 @@ describe('buildTrainingPattern', () => {
     const pattern = patternFrom(runs);
     expect(pattern.sampleSize).toBe(8);
   });
+
+  it('limita a janela de análise quando weeks é informado', () => {
+    const features = buildRoutine().map((run) => buildActivityFeatures(run));
+
+    const defaultPattern = buildTrainingPattern(features, { now: NOW });
+    const recentPattern = buildTrainingPattern(features, {
+      now: NOW,
+      weeks: 3,
+    });
+
+    expect(defaultPattern.sampleSize).toBe(48);
+    expect(recentPattern.sampleSize).toBe(16);
+    expect(recentPattern.weeksAnalyzed).toBe(3);
+  });
 });
