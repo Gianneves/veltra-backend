@@ -36,13 +36,19 @@ export class User {
   @Column()
   refreshToken!: string;
 
-  @Column()
+  @Column({ type: 'timestamptz' })
   expiresAt!: Date;
 
-  @CreateDateColumn()
+  @Column({ type: 'date', nullable: true })
+  birthDate?: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  healthConsentAt?: Date | null;
+
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt?: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt?: Date;
 
   @OneToMany(() => Activity, (activity) => activity.user)

@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { User } from './entities/user.entity';
 import { Repository } from 'typeorm';
@@ -90,8 +91,80 @@ export class UsersService {
   async findById(id: string) {
     return this.userRepository.findOne({
       where: { id },
-      select: ['id', 'name', 'avatarUrl', 'stravaId', 'createdAt', 'updatedAt'],
+      select: [
+        'id',
+        'name',
+        'avatarUrl',
+        'stravaId',
+        'birthDate',
+        'createdAt',
+        'updatedAt',
+      ],
     });
+  }
+
+  async getProfile(id: string) {
+    const user = await this.userRepository.findOne({
+      where: { id },
+      select: [
+        'id',
+        'name',
+        'avatarUrl',
+        'stravaId',
+        'birthDate',
+        'healthConsentAt',
+        'createdAt',
+        'updatedAt',
+      ],
+    });
+
+    if (!user) throw new BadRequestException('Usuário não encontrado');
+
+    return {
+      id: user.id,
+      name: user.name,
+      avatarUrl: user.avatarUrl ?? null,
+      stravaId: user.stravaId,
+      birthDate: user.birthDate ?? null,
+      healthConsent: !!user.healthConsentAt,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
+  }
+
+  async updateProfile(id: string, dto: UpdateProfileDto) {
+    const patch: Partial<User> = {};
+
+    if (dto.birthDate !== undefined) {
+      if (dto.birthDate === null || dto.birthDate === '') {
+        patch.birthDate = null;
+      } else {
+        const value = dto.birthDate.slice(0, 10);
+        const parsed = new Date(`${value}T12:00:00`);
+
+        if (Number.isNaN(parsed.getTime()) || parsed.getFullYear() < 1900) {
+          throw new BadRequestException('Data de nascimento inválida');
+        }
+
+        if (parsed.getTime() > Date.now()) {
+          throw new BadRequestException(
+            'Data de nascimento não pode estar no futuro',
+          );
+        }
+
+        patch.birthDate = value;
+      }
+    }
+
+    if (dto.healthConsent !== undefined) {
+      patch.healthConsentAt = dto.healthConsent ? new Date() : null;
+    }
+
+    if (Object.keys(patch).length > 0) {
+      await this.userRepository.update(id, patch);
+    }
+
+    return this.getProfile(id);
   }
 
   async findByStravaId(stravaId: number) {

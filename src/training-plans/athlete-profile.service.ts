@@ -3,6 +3,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThanOrEqual, Repository } from 'typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
 import type { Goal } from 'src/goals/entities/goal.entity';
+import {
+  calculateAge,
+  predictedMaxHeartRate,
+} from 'src/health/age-policy';
+import { User } from 'src/users/entities/user.entity';
 import { buildActivityFeatures } from './activity-features';
 import {
   TrainingPattern,
@@ -24,6 +29,9 @@ export interface AthleteProfile {
   bestMediumPace?: number;
   bestLongPace?: number;
   maxHeartRate?: number;
+  birthDate?: string;
+  age?: number;
+  predictedMaxHeartRate?: number;
   runsPerWeek: number;
   pattern: TrainingPattern;
 }
@@ -38,7 +46,21 @@ export class AthleteProfileService {
   constructor(
     @InjectRepository(Activity)
     private readonly activityRepository: Repository<Activity>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
   ) {}
+
+  async getAge(
+    userId: string,
+    now: Date = new Date(),
+  ): Promise<number | undefined> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'birthDate'],
+    });
+
+    return calculateAge(user?.birthDate, now);
+  }
 
   async build(
     userId: string,
@@ -46,6 +68,11 @@ export class AthleteProfileService {
     now: Date = new Date(),
   ): Promise<AthleteProfile> {
     const effortSince = this.daysAgo(now, EFFORT_WINDOW_DAYS);
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'birthDate'],
+    });
+    const age = calculateAge(user?.birthDate, now);
 
     const activities = await this.activityRepository.find({
       where: {
@@ -120,6 +147,9 @@ export class AthleteProfileService {
       bestMediumPace: this.bestPace(runs, 5500, 10500),
       bestLongPace: this.bestPace(runs, 10500, Infinity),
       maxHeartRate: maxHeartRate > 0 ? maxHeartRate : undefined,
+      birthDate: user?.birthDate ?? undefined,
+      age,
+      predictedMaxHeartRate: predictedMaxHeartRate(age),
       runsPerWeek: this.runsPerWeek(runs, now),
       pattern,
     };

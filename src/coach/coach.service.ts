@@ -4,6 +4,11 @@ import { FindOptionsOrder, In, MoreThanOrEqual, Repository } from 'typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
 import { AiService, type CoachProposal } from 'src/ai/ai.service';
 import { Goal } from 'src/goals/entities/goal.entity';
+import {
+  assessDistanceForAge,
+  planAgeAdjustment,
+} from 'src/health/age-policy';
+import { HealthAlertsService } from 'src/health/health-alerts.service';
 import { assessAdherence, type AdherenceVerdict } from 'src/insights/adherence';
 import {
   AthleteProfileService,
@@ -66,7 +71,12 @@ Negociação de treinos: quando o atleta pedir ou quando fizer sentido, você po
 <proposta>{"session":2,"changes":{"plannedDistance":8000,"plannedPace":330,"day":"Qua"},"reason":"motivo curto"}</proposta>
 - O campo session é o número entre colchetes da sessão no contexto (ex.: [2]). Use apenas números de sessões listados sem "(passado)".
 - Se o atleta citar um dia da semana, considere a próxima ocorrência futura desse dia a partir de hoje, conferindo a data de cada sessão no contexto.
-- Campos permitidos em changes: type, plannedDistance (metros), plannedPace (segundos por km), day, notes. Se não houver mudança concreta, não inclua o bloco.`;
+- Campos permitidos em changes: type, plannedDistance (metros), plannedPace (segundos por km), day, notes. Se não houver mudança concreta, não inclua o bloco.
+
+Segurança e saúde: você não faz diagnóstico nem prescreve tratamento.
+- Se houver alertas de saúde no contexto, explique com cautela, sem alarmar, e recomende acompanhamento profissional quando indicado.
+- Se o atleta relatar sintomas agudos (dor no peito, desmaio, falta de ar), oriente interromper o exercício e procurar atendimento imediatamente (SAMU 192).
+- Nunca proponha distância ou volume acima do limite por idade informado no contexto.`;
 
 @Injectable()
 export class CoachService {
@@ -85,6 +95,7 @@ export class CoachService {
     private readonly activityRepository: Repository<Activity>,
     private readonly athleteProfileService: AthleteProfileService,
     private readonly aiService: AiService,
+    private readonly healthAlertsService: HealthAlertsService,
   ) {}
 
   async getOrCreateConversation(userId: string, conversationId?: string) {
@@ -257,6 +268,36 @@ export class CoachService {
       if (profile.bestLongPace) {
         lines.push(
           `- Melhor pace longo: ${this.formatPace(profile.bestLongPace)}`,
+        );
+      }
+    }
+
+    if (profile?.age !== undefined) {
+      lines.push(`- Idade: ${profile.age} anos`);
+    }
+    if (profile?.predictedMaxHeartRate) {
+      lines.push(
+        `- FC máxima prevista (fórmula de Tanaka): ${profile.predictedMaxHeartRate} bpm`,
+      );
+    }
+
+    const ageAdjustment = planAgeAdjustment(profile?.age);
+    if (ageAdjustment) {
+      lines.push(`- Limite por idade: ${ageAdjustment.reason}`);
+    }
+
+    const healthAlerts = await this.healthAlertsService
+      .getAlerts(userId)
+      .catch(() => []);
+
+    if (healthAlerts.length > 0) {
+      lines.push('');
+      lines.push(
+        'Alertas de saúde e segurança (não diagnosticar; orientar acompanhamento profissional quando indicado):',
+      );
+      for (const alert of healthAlerts.slice(0, 5)) {
+        lines.push(
+          `- [${alert.severity}] ${alert.title}: ${alert.message} ${alert.recommendation}`,
         );
       }
     }
@@ -443,6 +484,22 @@ export class CoachService {
         plannedDistance <= session.plannedDistance * (1 + MAX_DISTANCE_CHANGE)
       ) {
         changes.plannedDistance = plannedDistance;
+      }
+    }
+
+    if (changes.plannedDistance !== undefined) {
+      const age = await this.athleteProfileService.getAge(userId);
+      if (age !== undefined) {
+        const distanceKm = changes.plannedDistance / 1000;
+        const assessment = assessDistanceForAge(distanceKm, age);
+        const adjustment = planAgeAdjustment(age);
+        const exceedsAgeCap =
+          adjustment?.maxLongRunKm !== undefined &&
+          distanceKm > adjustment.maxLongRunKm;
+
+        if (!assessment.allowed || exceedsAgeCap) {
+          changes.plannedDistance = undefined;
+        }
       }
     }
 

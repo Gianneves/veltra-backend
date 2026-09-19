@@ -1,5 +1,6 @@
 import type { Activity } from 'src/activities/entities/activity.entity';
 import type { Goal } from 'src/goals/entities/goal.entity';
+import { checkupAdvice, planAgeAdjustment } from 'src/health/age-policy';
 import type {
   ActivityFeatures,
   RunType,
@@ -164,6 +165,28 @@ export function buildActivityInsightContext({
     if (profile.bestLongPace) {
       lines.push(`- Melhor pace longo: ${formatPace(profile.bestLongPace)}`);
     }
+  }
+
+  if (profile?.age !== undefined) {
+    lines.push('');
+    lines.push('Faixa etária e segurança:');
+    lines.push(`- Idade: ${profile.age} anos`);
+    if (profile.predictedMaxHeartRate) {
+      lines.push(
+        `- FC máxima prevista (fórmula de Tanaka): ${profile.predictedMaxHeartRate} bpm`,
+      );
+    }
+    const adjustment = planAgeAdjustment(profile.age);
+    if (adjustment) {
+      lines.push(`- Limite por idade: ${adjustment.reason}`);
+    }
+    const advice = checkupAdvice(profile.age);
+    if (advice) {
+      lines.push(`- Acompanhamento médico: ${advice.message}`);
+    }
+    lines.push(
+      '- Não faça diagnóstico médico; recomende acompanhamento profissional quando fizer sentido.',
+    );
   }
 
   return lines.join('\n');

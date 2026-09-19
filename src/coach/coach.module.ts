@@ -9,8 +9,10 @@ import { Goal } from 'src/goals/entities/goal.entity';
 import { AthleteProfileService } from 'src/training-plans/athlete-profile.service';
 import { TrainingPlan } from 'src/training-plans/entities/training-plan.entity';
 import { TrainingSession } from 'src/training-plans/entities/training-session.entity';
+import { User } from 'src/users/entities/user.entity';
 import { AiModule } from 'src/ai/ai.module';
 import { AuthModule } from 'src/auth/auth.module';
+import { HealthModule } from 'src/health/health.module';
 
 @Module({
   imports: [
@@ -21,9 +23,11 @@ import { AuthModule } from 'src/auth/auth.module';
       TrainingPlan,
       TrainingSession,
       Activity,
+      User,
     ]),
     AiModule,
     AuthModule,
+    HealthModule,
   ],
   controllers: [CoachController],
   providers: [CoachService, AthleteProfileService],

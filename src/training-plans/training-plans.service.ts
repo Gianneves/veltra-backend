@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsOrder, In, MoreThanOrEqual, Repository } from 'typeorm';
 import { TrainingPlan } from './entities/training-plan.entity';
@@ -6,6 +6,11 @@ import { TrainingSession } from './entities/training-session.entity';
 import { Activity } from 'src/activities/entities/activity.entity';
 import { Goal } from 'src/goals/entities/goal.entity';
 import { AiService } from 'src/ai/ai.service';
+import {
+  HEALTH_DISCLAIMER,
+  assessDistanceForAge,
+  planAgeAdjustment,
+} from 'src/health/age-policy';
 import {
   AthleteProfile,
   AthleteProfileService,
@@ -181,7 +186,7 @@ export class TrainingPlansService {
     planId: string,
     sessionId: string,
     userId: string,
-    data: Partial<TrainingSession>,
+    data: Partial<TrainingSession> & { acknowledgeAgePolicy?: boolean },
   ) {
     const plan = await this.planRepository.findOne({
       where: { id: planId, userId },
@@ -193,11 +198,40 @@ export class TrainingPlansService {
     });
     if (!session) return null;
 
-    if (data.day && DAY_ORDER[data.day] !== undefined) {
-      session.dayOrder = DAY_ORDER[data.day];
+    const { acknowledgeAgePolicy, ...sessionData } = data;
+
+    if (sessionData.plannedDistance !== undefined && sessionData.plannedDistance > 0) {
+      const age = await this.athleteProfileService.getAge(userId);
+
+      if (age !== undefined) {
+        const distanceKm = sessionData.plannedDistance / 1000;
+        const assessment = assessDistanceForAge(distanceKm, age);
+        const adjustment = planAgeAdjustment(age);
+        const exceedsAgeCap =
+          adjustment?.maxLongRunKm !== undefined &&
+          distanceKm > adjustment.maxLongRunKm;
+        const blocked = !assessment.allowed || exceedsAgeCap;
+
+        if (blocked && !acknowledgeAgePolicy) {
+          throw new BadRequestException({
+            code: 'AGE_POLICY',
+            message:
+              assessment.message ??
+              adjustment?.reason ??
+              'Distância acima do recomendado para a sua idade.',
+            recommendedMaxKm: adjustment?.maxLongRunKm ?? null,
+            recommendedMinAge: assessment.recommendedMinAge,
+            disclaimer: HEALTH_DISCLAIMER,
+          });
+        }
+      }
     }
 
-    Object.assign(session, data);
+    if (sessionData.day && DAY_ORDER[sessionData.day] !== undefined) {
+      session.dayOrder = DAY_ORDER[sessionData.day];
+    }
+
+    Object.assign(session, sessionData);
 
     if (session.type === 'rest') {
       session.plannedPace = 0;
@@ -287,11 +321,13 @@ export class TrainingPlansService {
       profile.level,
       runDays,
       pattern,
+      profile.age,
     );
     const fastStart =
       profile.hasData &&
       (profile.level === 'intermediate' || profile.level === 'advanced');
     let patternNote: string | undefined;
+    const ageNote = planAgeAdjustment(profile.age)?.reason;
 
     const plans: TrainingPlan[] = [];
     const summaries: WeekSummary[] = [];
@@ -358,7 +394,7 @@ export class TrainingPlansService {
         workouts,
         paces,
         pattern,
-        maxHeartRate: profile.maxHeartRate,
+        maxHeartRate: profile.maxHeartRate ?? profile.predictedMaxHeartRate,
         weekStart,
         weekIndex,
       });
@@ -389,7 +425,7 @@ export class TrainingPlansService {
       });
     }
 
-    const firstWeekNotes = [patternNote, targetNote]
+    const firstWeekNotes = [patternNote, targetNote, ageNote]
       .filter((part): part is string => !!part)
       .join('\n\n');
 
@@ -470,11 +506,11 @@ export class TrainingPlansService {
     const { goal, profile, raceKm, totalWeeks } = opts;
     const pattern = profile.pattern;
 
-    const tablePeak = this.peakWeeklyVolume(raceKm, profile.level);
+    const tablePeak = this.peakWeeklyVolume(raceKm, profile.level, profile.age);
     const goalLongKm = goal.longestRunDistance
       ? goal.longestRunDistance / 1000
       : 0;
-    const longCap = this.longRunCap(raceKm, profile.level);
+    const longCap = this.longRunCap(raceKm, profile.level, profile.age);
 
     const recordedLong = Math.max(profile.longestRunKm, goalLongKm);
     const typicalLong = pattern?.longRun?.km ?? 0;
@@ -503,11 +539,13 @@ export class TrainingPlansService {
       profile.peakWeeklyKm > 0
         ? Math.min(profile.peakWeeklyKm, tablePeak * 1.1)
         : 0;
-    const weeklyCeiling = Math.max(
-      recentWeekly,
-      targetFromTable,
-      demonstratedPeak,
-    );
+    const ageAdjustment = planAgeAdjustment(profile.age);
+    const weeklyCeiling = ageAdjustment
+      ? Math.min(
+          Math.max(recentWeekly, targetFromTable, demonstratedPeak),
+          tablePeak,
+        )
+      : Math.max(recentWeekly, targetFromTable, demonstratedPeak);
 
     const startWeekly = Math.min(
       Math.max(recentWeekly, fallbackWeekly * 0.7, weeklyForLong(longStart)),
@@ -1543,23 +1581,38 @@ export class TrainingPlansService {
     level: AthleteLevel,
     runDays: string[],
     pattern?: TrainingPattern,
+    age?: number,
   ): number {
     const cap = runDays.length <= 3 ? 1 : 2;
 
-    if (level === 'beginner') return 1;
+    let result: number;
+    if (level === 'beginner') {
+      result = 1;
+    } else {
+      const historical =
+        pattern?.hasData && pattern.qualityPerWeek > 0
+          ? Math.round(pattern.qualityPerWeek)
+          : undefined;
 
-    const historical =
-      pattern?.hasData && pattern.qualityPerWeek > 0
-        ? Math.round(pattern.qualityPerWeek)
-        : undefined;
+      const fallback = level === 'novice' ? 1 : 2;
+      const desired = historical ?? fallback;
 
-    const fallback = level === 'novice' ? 1 : 2;
-    const desired = historical ?? fallback;
+      result = Math.max(1, Math.min(cap, desired));
+    }
 
-    return Math.max(1, Math.min(cap, desired));
+    const adjustment = planAgeAdjustment(age);
+    if (adjustment?.maxQualitySessions !== undefined) {
+      result = Math.min(result, adjustment.maxQualitySessions);
+    }
+
+    return result;
   }
 
-  private longRunCap(raceKm: number, level: AthleteLevel): number {
+  private longRunCap(
+    raceKm: number,
+    level: AthleteLevel,
+    age?: number,
+  ): number {
     const caps: Record<AthleteLevel, Record<string, number>> = {
       beginner: { '5': 8, '10': 12, '21.1': 15, '42.2': 25 },
       novice: { '5': 10, '10': 14, '21.1': 18, '42.2': 28 },
@@ -1567,13 +1620,29 @@ export class TrainingPlansService {
       advanced: { '5': 14, '10': 18, '21.1': 24, '42.2': 35 },
     };
 
+    let cap = caps[level]['5'];
     for (const { minKm, key } of DISTANCE_TARGETS) {
-      if (raceKm >= minKm) return caps[level][key];
+      if (raceKm >= minKm) {
+        cap = caps[level][key];
+        break;
+      }
     }
-    return caps[level]['5'];
+
+    const adjustment = planAgeAdjustment(age);
+    if (adjustment?.maxLongRunKm !== undefined) {
+      cap = Math.min(cap, adjustment.maxLongRunKm);
+    } else if (adjustment?.volumeFactor !== undefined) {
+      cap = Math.round(cap * adjustment.volumeFactor * 10) / 10;
+    }
+
+    return cap;
   }
 
-  private peakWeeklyVolume(raceKm: number, level: AthleteLevel): number {
+  private peakWeeklyVolume(
+    raceKm: number,
+    level: AthleteLevel,
+    age?: number,
+  ): number {
     const volumes: Record<AthleteLevel, Record<string, number>> = {
       beginner: { '5': 18, '10': 25, '21.1': 35, '42.2': 45 },
       novice: { '5': 22, '10': 30, '21.1': 40, '42.2': 55 },
@@ -1581,10 +1650,22 @@ export class TrainingPlansService {
       advanced: { '5': 28, '10': 40, '21.1': 60, '42.2': 80 },
     };
 
+    let volume = Math.max(15, raceKm * 1.5);
     for (const { minKm, key } of DISTANCE_TARGETS) {
-      if (raceKm >= minKm) return volumes[level][key];
+      if (raceKm >= minKm) {
+        volume = volumes[level][key];
+        break;
+      }
     }
-    return Math.max(15, raceKm * 1.5);
+
+    const adjustment = planAgeAdjustment(age);
+    if (adjustment?.maxWeeklyKm !== undefined) {
+      volume = Math.min(volume, adjustment.maxWeeklyKm);
+    } else if (adjustment?.volumeFactor !== undefined) {
+      volume = Math.round(volume * adjustment.volumeFactor * 10) / 10;
+    }
+
+    return volume;
   }
 
   private isDeloadWeek(weekIndex: number, totalWeeks: number): boolean {
@@ -1663,6 +1744,9 @@ export class TrainingPlansService {
         melhorPace5k: profile.bestShortPace,
         melhorPace10k: profile.bestMediumPace,
         corridasPorSemana: profile.runsPerWeek,
+        idade: profile.age ?? null,
+        fcMaximaPrevista: profile.predictedMaxHeartRate ?? null,
+        limitePorIdade: planAgeAdjustment(profile.age)?.reason ?? null,
       },
       historicoDoAtleta: pattern?.hasData
         ? {

@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
 import { AiService } from 'src/ai/ai.service';
 import { Goal } from 'src/goals/entities/goal.entity';
+import { HealthAlertsService } from 'src/health/health-alerts.service';
 import { AthleteProfileService } from 'src/training-plans/athlete-profile.service';
 import { TrainingPlan } from 'src/training-plans/entities/training-plan.entity';
 import { TrainingSession } from 'src/training-plans/entities/training-session.entity';
@@ -35,8 +36,9 @@ describe('CoachService', () => {
   let planRepository: { find: jest.Mock; findOne: jest.Mock };
   let sessionRepository: { find: jest.Mock; findOne: jest.Mock };
   let activityRepository: { find: jest.Mock };
-  let athleteProfileService: { build: jest.Mock };
+  let athleteProfileService: { build: jest.Mock; getAge: jest.Mock };
   let aiService: { generateCoachReplyStream: jest.Mock };
+  let healthAlertsService: { getAlerts: jest.Mock };
 
   beforeEach(async () => {
     conversationRepository = {
@@ -96,7 +98,9 @@ describe('CoachService', () => {
     activityRepository = { find: jest.fn().mockResolvedValue([]) };
     athleteProfileService = {
       build: jest.fn().mockResolvedValue({ hasData: false }),
+      getAge: jest.fn().mockResolvedValue(undefined),
     };
+    healthAlertsService = { getAlerts: jest.fn().mockResolvedValue([]) };
     aiService = {
       generateCoachReplyStream: jest
         .fn()
@@ -133,6 +137,7 @@ describe('CoachService', () => {
         { provide: getRepositoryToken(Activity), useValue: activityRepository },
         { provide: AthleteProfileService, useValue: athleteProfileService },
         { provide: AiService, useValue: aiService },
+        { provide: HealthAlertsService, useValue: healthAlertsService },
       ],
     }).compile();
 

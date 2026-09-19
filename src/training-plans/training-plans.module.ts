@@ -10,10 +10,17 @@ import { AuthModule } from 'src/auth/auth.module';
 import { AiModule } from 'src/ai/ai.module';
 import { Activity } from 'src/activities/entities/activity.entity';
 import { Goal } from 'src/goals/entities/goal.entity';
+import { User } from 'src/users/entities/user.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([TrainingPlan, TrainingSession, Activity, Goal]),
+    TypeOrmModule.forFeature([
+      TrainingPlan,
+      TrainingSession,
+      Activity,
+      Goal,
+      User,
+    ]),
     AuthModule,
     AiModule,
   ],
