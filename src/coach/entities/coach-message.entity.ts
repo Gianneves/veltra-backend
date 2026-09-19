@@ -30,7 +30,7 @@ export class CoachMessage {
   @JoinColumn({ name: 'conversationId' })
   conversation!: CoachConversation;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt?: Date;
 
   @BeforeInsert()

@@ -35,10 +35,10 @@ export class TrainingPlan {
   })
   sessions!: TrainingSession[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt?: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt?: Date;
 
   @BeforeInsert()

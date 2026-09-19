@@ -24,10 +24,10 @@ export class CoachConversation {
   @OneToMany(() => CoachMessage, (msg) => msg.conversation, { cascade: true })
   messages!: CoachMessage[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt?: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt?: Date;
 
   @BeforeInsert()

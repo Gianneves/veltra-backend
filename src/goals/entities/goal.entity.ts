@@ -63,10 +63,10 @@ export class Goal {
   @OneToMany(() => Milestone, (milestone) => milestone.goal, { cascade: true })
   milestones!: Milestone[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt?: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt?: Date;
 
   @BeforeInsert()

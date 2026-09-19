@@ -27,10 +27,10 @@ export class Insight {
   @Column({ default: 'pending' })
   status!: string;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt?: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt?: Date;
 
   @ManyToOne(() => Activity, (activity) => activity.insights, {
