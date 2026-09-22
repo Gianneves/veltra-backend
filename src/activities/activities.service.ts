@@ -202,10 +202,20 @@ Max Watts: ${format(activity.max_watts, ' W')}
       existing.start_date = createActivityDto.startDate;
       existing.start_date_local = createActivityDto.startDateLocal;
       existing.timezone = createActivityDto.timezone;
-      existing.laps = createActivityDto.laps as StravaLap[] | undefined;
-      existing.average_heartrate = createActivityDto.average_heartrate;
-      existing.max_heartrate = createActivityDto.max_heartrate;
-      existing.max_watts = createActivityDto.max_watts;
+      // Campos vindos apenas do detalhe da atividade (ausentes no summary
+      // do Strava): nunca apagar valores já gravados com undefined.
+      if (createActivityDto.laps != null) {
+        existing.laps = createActivityDto.laps as StravaLap[] | undefined;
+      }
+      if (createActivityDto.average_heartrate != null) {
+        existing.average_heartrate = createActivityDto.average_heartrate;
+      }
+      if (createActivityDto.max_heartrate != null) {
+        existing.max_heartrate = createActivityDto.max_heartrate;
+      }
+      if (createActivityDto.max_watts != null) {
+        existing.max_watts = createActivityDto.max_watts;
+      }
 
       return this.activityRepository.save(existing);
     }

@@ -54,11 +54,13 @@ export class StravaSyncController {
     let synced = 0;
     let matched = 0;
 
-    for (const detail of activities) {
-      const start = detail.start_date
-        ? new Date(detail.start_date).getTime()
+    for (const summary of activities) {
+      const start = summary.start_date
+        ? new Date(summary.start_date).getTime()
         : 0;
       if (start < cutoff) continue;
+
+      const detail = await this.fetchDetail(summary, token);
 
       const saved = await this.activitiesService.upsert(
         this.webhookService.toActivityDto(detail),
@@ -72,5 +74,27 @@ export class StravaSyncController {
     }
 
     return { synced, matched, days };
+  }
+
+  private async fetchDetail(
+    summary: Activity,
+    token: string,
+  ): Promise<Activity> {
+    if (!summary.has_heartrate) return summary;
+
+    try {
+      const detail = await this.stravaService.fetchActivityById(
+        summary.id as number,
+        token,
+      );
+      if (detail) return { ...summary, ...detail };
+    } catch (err) {
+      console.error(
+        `Falha ao buscar detalhe da atividade ${summary.id}:`,
+        (err as Error).message,
+      );
+    }
+
+    return summary;
   }
 }

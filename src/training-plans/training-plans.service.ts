@@ -72,13 +72,13 @@ interface WeekSummary {
 }
 
 const DAY_ORDER: Record<string, number> = {
-  Dom: 0,
-  Seg: 1,
-  Ter: 2,
-  Qua: 3,
-  Qui: 4,
-  Sex: 5,
-  Sáb: 6,
+  Seg: 0,
+  Ter: 1,
+  Qua: 2,
+  Qui: 3,
+  Sex: 4,
+  Sáb: 5,
+  Dom: 6,
 };
 
 const ALL_DAY_SHORTS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -200,7 +200,10 @@ export class TrainingPlansService {
 
     const { acknowledgeAgePolicy, ...sessionData } = data;
 
-    if (sessionData.plannedDistance !== undefined && sessionData.plannedDistance > 0) {
+    if (
+      sessionData.plannedDistance !== undefined &&
+      sessionData.plannedDistance > 0
+    ) {
       const age = await this.athleteProfileService.getAge(userId);
 
       if (age !== undefined) {
@@ -405,10 +408,15 @@ export class TrainingPlansService {
         weekIndex,
       });
 
+      const plannedWeeklyKm = sessions
+        .filter((session) => session.type !== 'rest')
+        .reduce((sum, session) => sum + (session.plannedDistance ?? 0), 0);
+
       const plan = this.planRepository.create({
         userId: goal.userId,
         goalId: goal.id,
         weekStart: weekStartIso,
+        plannedWeeklyKm,
       });
 
       const savedPlan = await this.planRepository.save(plan);
@@ -1728,7 +1736,7 @@ export class TrainingPlansService {
 
   private getWeekStart(date: Date): Date {
     const start = new Date(date);
-    start.setDate(date.getDate() - date.getDay());
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
     start.setHours(0, 0, 0, 0);
     return start;
   }

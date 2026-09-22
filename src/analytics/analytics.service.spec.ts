@@ -48,7 +48,7 @@ describe('AnalyticsService', () => {
     const [from, to] = where.start_date.value as [Date, Date];
 
     const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
     weekStart.setHours(0, 0, 0, 0);
 
     expect(from.getTime()).toBe(weekStart.getTime());

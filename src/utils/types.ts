@@ -36,6 +36,7 @@ export interface Activity {
   average_heartrate: number;
   max_heartrate: number;
   max_watts: number;
+  has_heartrate?: boolean;
   start_date?: string;
   start_date_local?: string;
   timezone?: string;

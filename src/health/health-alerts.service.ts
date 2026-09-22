@@ -159,9 +159,7 @@ export class HealthAlertsService {
       ...this.consecutiveHardAlerts(runs, predicted, now),
       ...this.distanceMilestoneAlerts(runs, age, now),
       ...this.checkupAlerts(age),
-    ].sort(
-      (a, b) => SEVERITY_WEIGHT[a.severity] - SEVERITY_WEIGHT[b.severity],
-    );
+    ].sort((a, b) => SEVERITY_WEIGHT[a.severity] - SEVERITY_WEIGHT[b.severity]);
 
     return {
       age,
@@ -436,7 +434,9 @@ export class HealthAlertsService {
     for (const threshold of thresholds) {
       const crossing = runs.find((run) => {
         const date = this.localDate(run);
-        return !!date && date.getTime() >= since && run.distance / 1000 >= threshold;
+        return (
+          !!date && date.getTime() >= since && run.distance / 1000 >= threshold
+        );
       });
 
       if (!crossing) continue;
@@ -508,7 +508,7 @@ export class HealthAlertsService {
 
   private weekKey(date: Date): string {
     const start = new Date(date);
-    start.setDate(start.getDate() - start.getDay());
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
     start.setHours(0, 0, 0, 0);
     return start.toISOString().slice(0, 10);
   }

@@ -6,6 +6,7 @@ import { TrainingPlan } from './entities/training-plan.entity';
 import { TrainingSession } from './entities/training-session.entity';
 import { AthleteProfileService } from './athlete-profile.service';
 import { ActivityMatcherService } from './activity-matcher.service';
+import { VolumeAdjustmentService } from './volume-adjustment.service';
 import { AuthModule } from 'src/auth/auth.module';
 import { AiModule } from 'src/ai/ai.module';
 import { Activity } from 'src/activities/entities/activity.entity';
@@ -29,6 +30,7 @@ import { User } from 'src/users/entities/user.entity';
     TrainingPlansService,
     AthleteProfileService,
     ActivityMatcherService,
+    VolumeAdjustmentService,
   ],
   exports: [TrainingPlansService, ActivityMatcherService],
 })

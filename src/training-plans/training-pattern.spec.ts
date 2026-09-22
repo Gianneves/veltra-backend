@@ -77,17 +77,24 @@ function longRun(date: Date): Activity {
 function buildRoutine(weeks = 12): Activity[] {
   const runs: Activity[] = [];
 
-  for (let offset = 0; offset < weeks; offset++) {
-    const sunday = new Date(NOW);
-    sunday.setDate(sunday.getDate() - offset * 7);
-    sunday.setHours(7, 0, 0, 0);
+  const firstWeekMonday = new Date(NOW);
+  firstWeekMonday.setDate(
+    firstWeekMonday.getDate() - ((firstWeekMonday.getDay() + 6) % 7),
+  );
+  firstWeekMonday.setHours(7, 0, 0, 0);
 
-    const tuesday = new Date(sunday);
-    tuesday.setDate(tuesday.getDate() + 2);
-    const thursday = new Date(sunday);
-    thursday.setDate(thursday.getDate() + 4);
-    const friday = new Date(sunday);
-    friday.setDate(friday.getDate() + 5);
+  for (let offset = 0; offset < weeks; offset++) {
+    const monday = new Date(firstWeekMonday);
+    monday.setDate(monday.getDate() - offset * 7);
+
+    const tuesday = new Date(monday);
+    tuesday.setDate(tuesday.getDate() + 1);
+    const thursday = new Date(monday);
+    thursday.setDate(thursday.getDate() + 3);
+    const friday = new Date(monday);
+    friday.setDate(friday.getDate() + 4);
+    const sunday = new Date(monday);
+    sunday.setDate(sunday.getDate() + 6);
 
     runs.push(
       longRun(sunday),
@@ -175,7 +182,7 @@ describe('buildTrainingPattern', () => {
     });
 
     expect(defaultPattern.sampleSize).toBe(48);
-    expect(recentPattern.sampleSize).toBe(16);
+    expect(recentPattern.sampleSize).toBe(13);
     expect(recentPattern.weeksAnalyzed).toBe(3);
   });
 });

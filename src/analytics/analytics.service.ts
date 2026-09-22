@@ -13,7 +13,7 @@ export class AnalyticsService {
   async getWeeklyStats(userId: string) {
     const now = new Date();
     const weekStart = new Date(now);
-    weekStart.setDate(now.getDate() - now.getDay());
+    weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
     weekStart.setHours(0, 0, 0, 0);
 
     const weekEnd = new Date(weekStart);

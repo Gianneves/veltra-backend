@@ -5,6 +5,7 @@ import { Activity } from 'src/activities/entities/activity.entity';
 import { AiService } from 'src/ai/ai.service';
 import { TrainingPlan } from './entities/training-plan.entity';
 import { TrainingSession } from './entities/training-session.entity';
+import { VolumeAdjustmentService } from './volume-adjustment.service';
 import {
   ActivityFeatures,
   ActivityShape,
@@ -58,6 +59,7 @@ export class ActivityMatcherService {
     @InjectRepository(Activity)
     private readonly activityRepository: Repository<Activity>,
     private readonly aiService: AiService,
+    private readonly volumeAdjustment: VolumeAdjustmentService,
   ) {}
 
   buildFeatures(activity: Activity): ActivityFeatures {
@@ -305,6 +307,15 @@ export class ActivityMatcherService {
     session.completed = true;
 
     await this.sessionRepository.save(session);
+
+    try {
+      await this.volumeAdjustment.adjustForOvershoot(session);
+    } catch (err) {
+      console.error(
+        'Erro ao ajustar volume da semana:',
+        (err as Error).message,
+      );
+    }
   }
 
   private clearSessionMatch(session: TrainingSession): void {
@@ -393,7 +404,7 @@ export class ActivityMatcherService {
 
   private getWeekStart(date: Date): Date {
     const start = this.startOfDay(date);
-    start.setDate(start.getDate() - start.getDay());
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
     return start;
   }
 

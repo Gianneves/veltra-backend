@@ -4,10 +4,7 @@ import { FindOptionsOrder, In, MoreThanOrEqual, Repository } from 'typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
 import { AiService, type CoachProposal } from 'src/ai/ai.service';
 import { Goal } from 'src/goals/entities/goal.entity';
-import {
-  assessDistanceForAge,
-  planAgeAdjustment,
-} from 'src/health/age-policy';
+import { assessDistanceForAge, planAgeAdjustment } from 'src/health/age-policy';
 import { HealthAlertsService } from 'src/health/health-alerts.service';
 import { assessAdherence, type AdherenceVerdict } from 'src/insights/adherence';
 import {
@@ -63,6 +60,12 @@ const COACH_SYSTEM_PROMPT = `Você é o Veltra Coach, um treinador de corrida ex
 Você segue a metodologia 80/20 (80% dos treinos leves, 20% intensos) e progressão de volume de no máximo 10% por semana.
 Analise sempre os dados reais do atleta fornecidos no contexto; nunca invente dados.
 Responda em português do Brasil, em markdown (use listas e negrito quando ajudar), de forma clara e direta.
+
+Ao apresentar o plano ou os treinos da semana, siga estas regras:
+- Liste apenas sessões de treino a partir de hoje, com dia, data, distância e pace. Não liste sessões de descanso nem treinos já passados; treinos passados só aparecem se o atleta pedir análise ou retrospectiva.
+- O contexto traz os cabeçalhos "Semana atual" e "Próxima semana"; use essas referências ao responder.
+- Cite sempre o próximo longão (dia, data, distância e pace) quando houver, usando a linha "Próximo longão" do contexto, e avise quando ele estiver na próxima semana.
+- Mencione dias de descanso apenas quando o atleta perguntar ou quando for relevante para justificar a recuperação.
 
 Negociação de treinos: quando o atleta pedir ou quando fizer sentido, você pode propor mudanças em treinos FUTUROS do plano (nunca em treinos passados ou de descanso).
 - Proponha com cautela: distância dentro de ±25% e pace dentro de ±10% do planejado.
@@ -353,16 +356,23 @@ export class CoachService {
       if (!plan.sessions?.length) continue;
 
       lines.push('');
-      lines.push(
-        `Plano da semana de ${new Date(plan.weekStart).toLocaleDateString('pt-BR')}:`,
-      );
+      lines.push(`${this.describeWeek(new Date(plan.weekStart), weekStart)}:`);
+
+      const restDays: string[] = [];
 
       for (const session of plan.sessions) {
-        const sessionDate = new Date(plan.weekStart);
-        sessionDate.setDate(sessionDate.getDate() + session.dayOrder);
-        sessionDate.setHours(0, 0, 0, 0);
-
+        const sessionDate = this.sessionDate(plan.weekStart, session.dayOrder);
         const isPast = sessionDate < today;
+
+        if (session.type === 'rest') {
+          const label = sessionDate.toLocaleDateString('pt-BR', {
+            day: '2-digit',
+            month: '2-digit',
+          });
+          restDays.push(`${session.day} ${label}${isPast ? ' (passado)' : ''}`);
+          continue;
+        }
+
         let index: number | undefined;
         if (!isPast) {
           index = proposalIndex++;
@@ -371,6 +381,16 @@ export class CoachService {
 
         lines.push(this.describeSession(session, sessionDate, index));
       }
+
+      if (restDays.length > 0) {
+        lines.push(`- Descanso: ${restDays.join(', ')}`);
+      }
+    }
+
+    const nextLongRun = this.findNextLongRun(plans, today, weekStart);
+    if (nextLongRun) {
+      lines.push('');
+      lines.push(`Próximo longão: ${nextLongRun}`);
     }
 
     const activities = await this.activityRepository.find({
@@ -549,9 +569,75 @@ export class CoachService {
     };
   }
 
+  private describeWeek(planWeekStart: Date, currentWeekStart: Date): string {
+    const weekEnd = new Date(planWeekStart);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+
+    const format = (date: Date) =>
+      date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+    const range = `${format(planWeekStart)} a ${format(weekEnd)}`;
+
+    const diffWeeks = Math.round(
+      (planWeekStart.getTime() - currentWeekStart.getTime()) /
+        (7 * 24 * 60 * 60 * 1000),
+    );
+
+    if (diffWeeks === 0) return `Semana atual (${range})`;
+    if (diffWeeks === 1) return `Próxima semana (${range})`;
+    return `Semana de ${range}`;
+  }
+
+  private sessionDate(weekStart: string, dayOrder: number): Date {
+    const date = new Date(weekStart);
+    date.setDate(date.getDate() + dayOrder);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  }
+
+  private findNextLongRun(
+    plans: TrainingPlan[],
+    today: Date,
+    currentWeekStart: Date,
+  ): string | null {
+    for (const plan of plans) {
+      const sessions = [...(plan.sessions ?? [])].sort(
+        (a, b) => a.dayOrder - b.dayOrder,
+      );
+
+      for (const session of sessions) {
+        if (session.type !== 'long_run' || session.completed) continue;
+
+        const sessionDate = this.sessionDate(plan.weekStart, session.dayOrder);
+        if (sessionDate < today) continue;
+
+        const diffWeeks = Math.round(
+          (new Date(plan.weekStart).getTime() - currentWeekStart.getTime()) /
+            (7 * 24 * 60 * 60 * 1000),
+        );
+
+        let when: string;
+        if (diffWeeks <= 0) {
+          when = 'nesta semana';
+        } else if (diffWeeks === 1) {
+          when = 'na próxima semana';
+        } else {
+          const label = new Date(plan.weekStart).toLocaleDateString('pt-BR', {
+            day: '2-digit',
+            month: '2-digit',
+          });
+          when = `na semana de ${label}`;
+        }
+
+        return `${session.day} ${sessionDate.toLocaleDateString('pt-BR')}, ${(session.plannedDistance / 1000).toFixed(1)} km @ ${this.formatPace(session.plannedPace)} (${when})`;
+      }
+    }
+
+    return null;
+  }
+
   private currentWeekStart(): Date {
     const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
     weekStart.setHours(0, 0, 0, 0);
     return weekStart;
   }

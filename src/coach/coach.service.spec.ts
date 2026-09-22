@@ -13,9 +13,37 @@ import { CoachMessage } from './entities/coach-message.entity';
 
 function futureWeekStart(daysAhead = 7): string {
   const date = new Date();
-  date.setDate(date.getDate() - date.getDay() + daysAhead);
+  date.setDate(date.getDate() - ((date.getDay() + 6) % 7) + daysAhead);
   date.setHours(0, 0, 0, 0);
   return date.toISOString();
+}
+
+function buildSession(overrides: {
+  id: string;
+  day: string;
+  dayOrder: number;
+  type: string;
+  plannedDistance?: number;
+  plannedPace?: number;
+  planId?: string;
+}) {
+  return {
+    id: overrides.id,
+    planId: overrides.planId ?? 'plan-2',
+    day: overrides.day,
+    dayOrder: overrides.dayOrder,
+    type: overrides.type,
+    plannedDistance: overrides.plannedDistance ?? 0,
+    plannedPace: overrides.plannedPace ?? 0,
+    completed: false,
+    actualDistance: null,
+    actualPace: null,
+  };
+}
+
+function systemPromptFrom(mock: jest.Mock): string {
+  const [firstCall] = mock.mock.calls as [[string, ...unknown[]]];
+  return firstCall[0];
 }
 
 describe('CoachService', () => {
@@ -72,7 +100,7 @@ describe('CoachService', () => {
       id: 'session-1',
       planId: 'plan-1',
       day: 'Qua',
-      dayOrder: 3,
+      dayOrder: 2,
       plannedDistance: 10000,
       plannedPace: 350,
       actualDistance: null,
@@ -215,7 +243,7 @@ describe('CoachService', () => {
       id: 'session-1',
       planId: 'plan-1',
       day: 'Qua',
-      dayOrder: 3,
+      dayOrder: 2,
       plannedDistance: 10000,
       plannedPace: 350,
       actualDistance: null,
@@ -246,7 +274,7 @@ describe('CoachService', () => {
       id: 'session-1',
       planId: 'plan-1',
       day: 'Sáb',
-      dayOrder: 6,
+      dayOrder: 5,
       type: 'rest',
       plannedDistance: 0,
       plannedPace: 0,
@@ -277,7 +305,7 @@ describe('CoachService', () => {
       id: 'session-1',
       planId: 'plan-1',
       day: 'Dom',
-      dayOrder: 0,
+      dayOrder: 6,
       plannedDistance: 10000,
       plannedPace: 350,
       plan: { id: 'plan-1', userId: 'user-1', weekStart: futureWeekStart(-14) },
@@ -295,7 +323,7 @@ describe('CoachService', () => {
       id: 'session-1',
       planId: 'plan-1',
       day: 'Qua',
-      dayOrder: 3,
+      dayOrder: 2,
       plannedDistance: 10000,
       plannedPace: 350,
       plan: { id: 'plan-1', userId: 'user-2', weekStart: futureWeekStart(7) },
@@ -308,5 +336,167 @@ describe('CoachService', () => {
       jest.fn(),
     );
     expect(foreign.proposal).toBeNull();
+  });
+
+  it('groups rest days and keeps them out of proposal numbering', async () => {
+    planRepository.find.mockResolvedValue([
+      {
+        id: 'plan-2',
+        weekStart: futureWeekStart(7),
+        sessions: [
+          buildSession({
+            id: 'session-long',
+            day: 'Dom',
+            dayOrder: 6,
+            type: 'long_run',
+            plannedDistance: 19500,
+            plannedPace: 400,
+          }),
+          buildSession({
+            id: 'session-rest-seg',
+            day: 'Seg',
+            dayOrder: 0,
+            type: 'rest',
+          }),
+          buildSession({
+            id: 'session-tempo',
+            day: 'Ter',
+            dayOrder: 1,
+            type: 'tempo',
+            plannedDistance: 5100,
+            plannedPace: 360,
+          }),
+          buildSession({
+            id: 'session-rest-sab',
+            day: 'Sáb',
+            dayOrder: 5,
+            type: 'rest',
+          }),
+        ],
+      },
+    ]);
+
+    await service.streamMessage(
+      'user-1',
+      'Como está minha semana?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    const systemPrompt = systemPromptFrom(aiService.generateCoachReplyStream);
+
+    expect(systemPrompt).toContain('Próxima semana (');
+    expect(systemPrompt).toContain('[1] Dom');
+    expect(systemPrompt).toContain('[2] Ter');
+    expect(systemPrompt).not.toContain('[3]');
+    expect(systemPrompt).toContain('- Descanso: Seg');
+    expect(systemPrompt).toContain('Sáb');
+    expect(systemPrompt).toContain('Próximo longão: Dom');
+    expect(systemPrompt).toContain('19.5 km');
+    expect(systemPrompt).toContain('Não liste sessões de descanso');
+    expect(systemPrompt).toContain('Cite sempre o próximo longão');
+  });
+
+  it('marks past sessions and never numbers them', async () => {
+    planRepository.find.mockResolvedValue([
+      {
+        id: 'plan-past',
+        weekStart: futureWeekStart(-7),
+        sessions: [
+          buildSession({
+            id: 'session-past-long',
+            day: 'Dom',
+            dayOrder: 6,
+            type: 'long_run',
+            plannedDistance: 17700,
+            plannedPace: 400,
+            planId: 'plan-past',
+          }),
+          buildSession({
+            id: 'session-past-rest',
+            day: 'Seg',
+            dayOrder: 0,
+            type: 'rest',
+            planId: 'plan-past',
+          }),
+        ],
+      },
+    ]);
+
+    await service.streamMessage('user-1', 'Resumo', 'conv-1', jest.fn());
+
+    const systemPrompt = systemPromptFrom(aiService.generateCoachReplyStream);
+
+    expect(systemPrompt).toContain('(passado — não pode ser alterado)');
+    expect(systemPrompt).not.toMatch(/\[\d+\] Dom/);
+    expect(systemPrompt).toContain('- Descanso: Seg');
+    expect(systemPrompt).toContain('(passado)');
+  });
+
+  it('maps proposal numbers past rest days to the right workout', async () => {
+    const weekStart = futureWeekStart(7);
+
+    planRepository.find.mockResolvedValue([
+      {
+        id: 'plan-2',
+        weekStart,
+        sessions: [
+          buildSession({
+            id: 'session-long',
+            day: 'Dom',
+            dayOrder: 6,
+            type: 'long_run',
+            plannedDistance: 19500,
+            plannedPace: 400,
+          }),
+          buildSession({
+            id: 'session-rest-seg',
+            day: 'Seg',
+            dayOrder: 0,
+            type: 'rest',
+          }),
+          buildSession({
+            id: 'session-tempo',
+            day: 'Ter',
+            dayOrder: 1,
+            type: 'tempo',
+            plannedDistance: 5100,
+            plannedPace: 360,
+          }),
+        ],
+      },
+    ]);
+    sessionRepository.findOne.mockResolvedValue({
+      id: 'session-tempo',
+      planId: 'plan-2',
+      day: 'Ter',
+      dayOrder: 1,
+      type: 'tempo',
+      plannedDistance: 5100,
+      plannedPace: 360,
+      actualDistance: null,
+      actualPace: null,
+      plan: { id: 'plan-2', userId: 'user-1', weekStart },
+    });
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Sugiro ajustar.',
+      proposal: {
+        session: 2,
+        changes: { plannedDistance: 5500 },
+        reason: 'Ajuste leve',
+      },
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Ajusta o treino?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(sessionRepository.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'session-tempo' } }),
+    );
+    expect(result.proposal?.sessionId).toBe('session-tempo');
   });
 });

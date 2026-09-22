@@ -30,6 +30,18 @@ export class TrainingPlan {
   @Column({ type: 'text', nullable: true })
   coachNotes?: string;
 
+  @Column({ type: 'double precision', nullable: true })
+  plannedWeeklyKm?: number | null;
+
+  @Column({ default: false })
+  volumeAdjusted?: boolean;
+
+  @Column({ type: 'varchar', nullable: true })
+  volumeAdjustedReason?: string | null;
+
+  @Column({ type: 'timestamp with time zone', nullable: true })
+  volumeAdjustedAt?: Date | null;
+
   @OneToMany(() => TrainingSession, (session) => session.plan, {
     cascade: true,
   })

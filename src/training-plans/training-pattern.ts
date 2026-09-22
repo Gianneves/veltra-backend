@@ -398,7 +398,7 @@ function countWeeks(weekStarts: Date[]): number {
 
 function weekStartOf(date: Date): Date {
   const start = startOfDay(date);
-  start.setDate(start.getDate() - start.getDay());
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
   return start;
 }
 

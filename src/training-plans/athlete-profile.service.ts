@@ -3,10 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThanOrEqual, Repository } from 'typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
 import type { Goal } from 'src/goals/entities/goal.entity';
-import {
-  calculateAge,
-  predictedMaxHeartRate,
-} from 'src/health/age-policy';
+import { calculateAge, predictedMaxHeartRate } from 'src/health/age-policy';
 import { User } from 'src/users/entities/user.entity';
 import { buildActivityFeatures } from './activity-features';
 import {
@@ -366,7 +363,7 @@ export class AthleteProfileService {
 
   private weekStart(date: Date): Date {
     const start = new Date(date);
-    start.setDate(date.getDate() - date.getDay());
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
     start.setHours(0, 0, 0, 0);
     return start;
   }
