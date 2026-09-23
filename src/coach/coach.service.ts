@@ -31,6 +31,21 @@ export interface ValidatedProposal extends CoachProposal {
   };
 }
 
+export type ProposalRejectionCode =
+  | 'INVALID_SESSION'
+  | 'PAST_OR_REST'
+  | 'OUT_OF_RANGE'
+  | 'AGE_CAP'
+  | 'EMPTY_CHANGES'
+  | 'MALFORMED'
+  | 'DAY_COLLISION';
+
+export interface ProposalRejection {
+  session: number | null;
+  code: ProposalRejectionCode;
+  message: string;
+}
+
 export interface CoachReply {
   conversationId: string;
   message: {
@@ -40,6 +55,8 @@ export interface CoachReply {
     timestamp: string | undefined;
   };
   proposal: ValidatedProposal | null;
+  proposals: ValidatedProposal[];
+  rejections: ProposalRejection[];
 }
 
 const HISTORY_LIMIT = 20;
@@ -70,8 +87,13 @@ Ao apresentar o plano ou os treinos da semana, siga estas regras:
 Negociação de treinos: quando o atleta pedir ou quando fizer sentido, você pode propor mudanças em treinos FUTUROS do plano (nunca em treinos passados ou de descanso).
 - Proponha com cautela: distância dentro de ±25% e pace dentro de ±10% do planejado.
 - Se a mudança não for segura para a meta ou para a recuperação, explique o motivo e não proponha.
-- Para propor, inclua ao final da resposta um bloco exatamente neste formato:
-<proposta>{"session":2,"changes":{"plannedDistance":8000,"plannedPace":330,"day":"Qua"},"reason":"motivo curto"}</proposta>
+- Para propor, inclua ao final da resposta um bloco exatamente neste formato (array com até 5 itens, mesmo para uma única mudança):
+<proposta>[{"session":2,"changes":{"plannedDistance":8000,"plannedPace":330,"day":"Qua"},"reason":"motivo curto"}]</proposta>
+- O campo session é o número entre colchetes da sessão no contexto (ex.: [2]). Use apenas números de sessões listados sem "(passado)". Confira o número de cada sessão antes de propor; nunca invente números.
+- Cada item do array altera UMA sessão. Para pedidos que afetam vários treinos ("deixa a semana mais leve", "inverte Qui e Sáb"), crie um item por sessão.
+- Nunca afirme que já alterou ou aplicou a mudança. Você apenas propõe; a mudança só é salva quando o atleta clicar em "Aplicar mudança". Deixe isso claro ("proponho abaixo, clique em Aplicar para salvar").
+- Nunca escreva "clique em Aplicar" se você não incluiu o bloco <proposta> nesta mesma resposta. Sem bloco, não há botão — então não prometa botão.
+- Se o pedido já está atendido pelo plano atual (ex.: os treinos já são nos dias pedidos), diga claramente que nada precisa mudar e não use "atualizado", "ajustado" ou "alterado" como se tivesse mudado algo. Só use essas palavras quando incluir o bloco <proposta> na mesma resposta.
 - O campo session é o número entre colchetes da sessão no contexto (ex.: [2]). Use apenas números de sessões listados sem "(passado)".
 - Se o atleta citar um dia da semana, considere a próxima ocorrência futura desse dia a partir de hoje, conferindo a data de cada sessão no contexto.
 - Campos permitidos em changes: type, plannedDistance (metros), plannedPace (segundos por km), day, notes. Se não houver mudança concreta, não inclua o bloco.
@@ -146,6 +168,8 @@ export class CoachService {
       role: message.role,
       content: message.content,
       createdAt: message.createdAt?.toISOString() ?? null,
+      proposals: (message.proposals ?? null) as ValidatedProposal[] | null,
+      rejections: (message.rejections ?? null) as ProposalRejection[] | null,
     }));
   }
 
@@ -190,17 +214,49 @@ export class CoachService {
       onToken,
     );
 
-    const text =
+    let text =
       result?.text?.trim() ||
       'Desculpe, não consegui responder agora. Tente novamente.';
-    const proposal = result?.proposal
-      ? await this.validateProposal(userId, result.proposal, proposalSessions)
-      : null;
+    const rawProposals: CoachProposal[] =
+      result?.proposals && result.proposals.length > 0
+        ? result.proposals
+        : result?.proposal
+          ? [result.proposal]
+          : [];
+    const { proposals, rejections } = await this.validateProposals(
+      userId,
+      rawProposals,
+      proposalSessions,
+    );
 
-    if (result?.proposal && !proposal) {
+    if (result?.malformed && rawProposals.length === 0) {
+      rejections.push({
+        session: null,
+        code: 'MALFORMED',
+        message:
+          'Não entendi a mudança proposta (bloco inválido). Tente pedir de novo, ex.: "reduz o treino de Qua para 8 km". Nada foi alterado.',
+      });
+    }
+
+    if (
+      proposals.length === 0 &&
+      rejections.length === 0 &&
+      (/aplicar/i.test(text) ||
+        (/atualizad|ajustad|alterad|modificad|salv/i.test(text) &&
+          /\[\d+\]/.test(text)))
+    ) {
+      text +=
+        '\n\n_Mostrei seu plano acima, mas não gerei nenhuma mudança — nada foi alterado. Se você quer ajustar algum treino, peça especificando, ex.: "reduz o easy de Qua para 5 km"._';
+    }
+
+    if (rawProposals.length > 0) {
       console.warn(
-        'Proposta do coach descartada na validação:',
-        JSON.stringify(result.proposal),
+        'Propostas do coach validadas:',
+        JSON.stringify({
+          raw: rawProposals,
+          accepted: proposals.length,
+          rejections,
+        }),
       );
     }
 
@@ -208,6 +264,8 @@ export class CoachService {
       conversationId: conv.id,
       role: 'coach',
       content: text,
+      proposals: proposals.length > 0 ? proposals : null,
+      rejections: rejections.length > 0 ? rejections : null,
     });
     await this.messageRepository.save(coachMsg);
 
@@ -228,7 +286,9 @@ export class CoachService {
         content: text,
         timestamp: coachMsg.createdAt?.toISOString(),
       },
-      proposal,
+      proposal: proposals[0] ?? null,
+      proposals,
+      rejections,
     };
   }
 
@@ -467,21 +527,104 @@ export class CoachService {
     return line;
   }
 
-  private async validateProposal(
+  private async validateProposals(
+    userId: string,
+    rawProposals: CoachProposal[],
+    proposalSessions: Map<number, string>,
+  ): Promise<{
+    proposals: ValidatedProposal[];
+    rejections: ProposalRejection[];
+  }> {
+    const proposals: ValidatedProposal[] = [];
+    const rejections: ProposalRejection[] = [];
+    const seenSessions = new Set<number>();
+    const dayTargets = new Map<string, number>();
+
+    for (const item of rawProposals) {
+      if (seenSessions.has(item.session)) {
+        rejections.push({
+          session: item.session,
+          code: 'MALFORMED',
+          message: `Sessão [${item.session}] repetida no mesmo pedido — considerei só a primeira. Nada foi alterado para a repetição.`,
+        });
+        continue;
+      }
+      seenSessions.add(item.session);
+
+      const validated = await this.validateSingleProposal(
+        userId,
+        item,
+        proposalSessions,
+      );
+      if (validated.rejection) {
+        rejections.push(validated.rejection);
+        continue;
+      }
+      const proposal = validated.proposal as ValidatedProposal;
+
+      if (proposal.changes.day) {
+        const key = `${proposal.planId}::${proposal.changes.day}`;
+        const otherSession = dayTargets.get(key);
+        if (otherSession !== undefined) {
+          const other = proposals.find((p) => p.session === otherSession);
+          const isSwap =
+            other?.changes.day === proposal.before.day &&
+            proposal.changes.day === other.before.day;
+          if (!isSwap) {
+            rejections.push({
+              session: item.session,
+              code: 'DAY_COLLISION',
+              message: `Sessão [${item.session}]: não propus mover para ${proposal.changes.day} porque a sessão [${otherSession}] do mesmo plano já vai para esse dia. Escolha outro dia. Nada foi alterado.`,
+            });
+            continue;
+          }
+        }
+        dayTargets.set(key, item.session);
+      }
+
+      proposals.push(proposal);
+    }
+
+    return { proposals, rejections };
+  }
+
+  private async validateSingleProposal(
     userId: string,
     proposal: CoachProposal,
     proposalSessions: Map<number, string>,
-  ): Promise<ValidatedProposal | null> {
+  ): Promise<{ proposal?: ValidatedProposal; rejection?: ProposalRejection }> {
+    const fail = (
+      code: ProposalRejectionCode,
+      message: string,
+    ): { rejection: ProposalRejection } => ({
+      rejection: { session: proposal.session, code, message },
+    });
+
     const sessionId = proposalSessions.get(proposal.session);
-    if (!sessionId) return null;
+    if (!sessionId) {
+      return fail(
+        'INVALID_SESSION',
+        `Sessão [${proposal.session}] não existe nos treinos futuros listados (pode ser passada, descanso ou número errado). Confira os números [N] da semana e peça de novo. Nada foi alterado.`,
+      );
+    }
 
     const session = await this.sessionRepository.findOne({
       where: { id: sessionId },
       relations: ['plan'],
     });
 
-    if (!session || session.plan?.userId !== userId) return null;
-    if (session.type === 'rest') return null;
+    if (!session || session.plan?.userId !== userId) {
+      return fail(
+        'INVALID_SESSION',
+        `Sessão [${proposal.session}] não encontrada no seu plano. Nada foi alterado.`,
+      );
+    }
+    if (session.type === 'rest') {
+      return fail(
+        'PAST_OR_REST',
+        `Sessão [${proposal.session}] é descanso e não pode ser alterada. Nada foi alterado.`,
+      );
+    }
 
     const sessionDate = new Date(session.plan.weekStart);
     sessionDate.setDate(sessionDate.getDate() + session.dayOrder);
@@ -490,9 +633,16 @@ export class CoachService {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    if (sessionDate < today) return null;
+    if (sessionDate < today) {
+      return fail(
+        'PAST_OR_REST',
+        `Sessão [${proposal.session}] já passou e não pode ser alterada. Posso ajustar só treinos futuros. Nada foi alterado.`,
+      );
+    }
 
     const changes: CoachProposal['changes'] = {};
+    let outOfRange = false;
+    let ageCapped = false;
 
     if (
       proposal.changes.type &&
@@ -519,7 +669,11 @@ export class CoachService {
         plannedDistance <= session.plannedDistance * (1 + MAX_DISTANCE_CHANGE)
       ) {
         changes.plannedDistance = plannedDistance;
+      } else {
+        outOfRange = true;
       }
+    } else if (proposal.changes.plannedDistance !== undefined) {
+      outOfRange = true;
     }
 
     if (changes.plannedDistance !== undefined) {
@@ -534,6 +688,7 @@ export class CoachService {
 
         if (!assessment.allowed || exceedsAgeCap) {
           changes.plannedDistance = undefined;
+          ageCapped = true;
         }
       }
     }
@@ -545,27 +700,50 @@ export class CoachService {
         plannedPace <= session.plannedPace * (1 + MAX_PACE_CHANGE)
       ) {
         changes.plannedPace = plannedPace;
+      } else {
+        outOfRange = true;
       }
+    } else if (proposal.changes.plannedPace !== undefined) {
+      outOfRange = true;
     }
 
     if (proposal.changes.notes) {
       changes.notes = proposal.changes.notes.slice(0, MAX_NOTES_LENGTH);
     }
 
-    if (Object.keys(changes).length === 0) return null;
+    if (Object.keys(changes).length === 0) {
+      if (ageCapped) {
+        return fail(
+          'AGE_CAP',
+          `Sessão [${proposal.session}]: não propus a distância por segurança para a sua idade. Nada foi alterado — quer uma opção dentro do limite?`,
+        );
+      }
+      if (outOfRange) {
+        return fail(
+          'OUT_OF_RANGE',
+          `Sessão [${proposal.session}]: não propus porque passou do limite seguro (±25% distância, ±10% pace). Nada foi alterado — quer que eu proponha dentro do limite?`,
+        );
+      }
+      return fail(
+        'EMPTY_CHANGES',
+        `Sessão [${proposal.session}]: não identifiquei mudança válida (tipo, distância, pace, dia ou observação). Nada foi alterado — pode detalhar o ajuste?`,
+      );
+    }
 
     return {
-      session: proposal.session,
-      sessionId: session.id,
-      planId: session.planId,
-      before: {
-        day: session.day,
-        type: session.type,
-        plannedDistance: session.plannedDistance,
-        plannedPace: session.plannedPace,
+      proposal: {
+        session: proposal.session,
+        sessionId: session.id,
+        planId: session.planId,
+        before: {
+          day: session.day,
+          type: session.type,
+          plannedDistance: session.plannedDistance,
+          plannedPace: session.plannedPace,
+        },
+        changes,
+        reason: proposal.reason,
       },
-      changes,
-      reason: proposal.reason,
     };
   }
 

@@ -46,7 +46,11 @@ export interface CoachProposal {
 export interface CoachReplyResult {
   text: string;
   proposal: CoachProposal | null;
+  proposals: CoachProposal[];
+  malformed: boolean;
 }
+
+export const MAX_COACH_PROPOSALS = 5;
 
 const PLAN_REVIEW_TIMEOUT_MS = 45000;
 const ACTIVITY_MATCH_TIMEOUT_MS = 20000;
@@ -74,45 +78,84 @@ function sanitizeChanges(raw: unknown): CoachProposal['changes'] {
   return changes;
 }
 
-export function splitCoachReply(text: string): CoachReplyResult {
-  const match = text.match(PROPOSAL_PATTERN);
-  if (!match) return { text: text.trim(), proposal: null };
+function parseProposalItem(raw: unknown): CoachProposal | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const parsed = raw as {
+    session?: unknown;
+    changes?: unknown;
+    reason?: unknown;
+  };
+  if (typeof parsed.session !== 'number' || !Number.isFinite(parsed.session)) {
+    return null;
+  }
+  return {
+    session: parsed.session,
+    changes: sanitizeChanges(parsed.changes),
+    reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+  };
+}
 
-  const cleaned = text.replace(PROPOSAL_PATTERN, '').trim();
-
+function parseProposalBlock(block: string): {
+  proposals: CoachProposal[];
+  malformed: boolean;
+} {
+  let raw: unknown;
   try {
-    const parsed = JSON.parse(match[1].trim()) as {
-      session?: unknown;
-      changes?: unknown;
-      reason?: unknown;
-    };
-
-    if (
-      typeof parsed.session !== 'number' ||
-      !Number.isFinite(parsed.session)
-    ) {
-      console.warn(
-        'Bloco de proposta sem sessão numérica:',
-        match[1].trim().slice(0, 300),
-      );
-      return { text: cleaned, proposal: null };
-    }
-
-    return {
-      text: cleaned,
-      proposal: {
-        session: parsed.session,
-        changes: sanitizeChanges(parsed.changes),
-        reason: typeof parsed.reason === 'string' ? parsed.reason : '',
-      },
-    };
+    raw = JSON.parse(block.trim());
   } catch {
     console.warn(
       'Bloco de proposta inválido do coach:',
-      match[1].trim().slice(0, 300),
+      block.trim().slice(0, 300),
     );
-    return { text: cleaned, proposal: null };
+    return { proposals: [], malformed: true };
   }
+
+  const items = Array.isArray(raw) ? raw : [raw];
+  const proposals: CoachProposal[] = [];
+  let malformed = false;
+
+  for (const item of items.slice(0, MAX_COACH_PROPOSALS)) {
+    const parsed = parseProposalItem(item);
+    if (parsed) {
+      proposals.push(parsed);
+    } else {
+      malformed = true;
+    }
+  }
+
+  if (Array.isArray(raw) && raw.length > MAX_COACH_PROPOSALS) {
+    malformed = true;
+  }
+
+  if (proposals.length === 0 && malformed) {
+    console.warn(
+      'Bloco de proposta sem sessão numérica:',
+      block.trim().slice(0, 300),
+    );
+  }
+
+  return { proposals, malformed };
+}
+
+export function splitCoachReply(text: string): CoachReplyResult {
+  const match = text.match(PROPOSAL_PATTERN);
+  if (!match)
+    return {
+      text: text.trim(),
+      proposal: null,
+      proposals: [],
+      malformed: false,
+    };
+
+  const cleaned = text.replace(PROPOSAL_PATTERN, '').trim();
+  const { proposals, malformed } = parseProposalBlock(match[1]);
+
+  return {
+    text: cleaned,
+    proposal: proposals[0] ?? null,
+    proposals,
+    malformed,
+  };
 }
 
 export function parseActivityInsight(
