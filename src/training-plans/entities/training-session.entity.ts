@@ -37,6 +37,12 @@ export class TrainingSession {
   notes?: string;
 
   @Column({ default: false })
+  adjusted?: boolean;
+
+  @Column({ type: 'varchar', nullable: true })
+  adjustmentNote?: string | null;
+
+  @Column({ default: false })
   completed!: boolean;
 
   @Column('uuid', { nullable: true })

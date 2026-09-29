@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { CreateActivityDto } from './dto/create-activity.dto';
-import { Repository, Between } from 'typeorm';
+import { Repository, Between, FindOptionsWhere } from 'typeorm';
 import { Activity } from './entities/activity.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { User } from 'src/users/entities/user.entity';
@@ -43,16 +43,20 @@ export class ActivitiesService {
 
     const savedActivity = await this.activityRepository.save(activity);
 
-    if (generateAI) {
-      this.generateInsightAndEmbedding(savedActivity).catch((err) =>
-        console.error('Erro ao gerar insight/embedding:', err.message),
+    if (generateAI && user) {
+      this.generateInsightAndEmbedding(savedActivity, user.id).catch(
+        (err: Error) =>
+          console.error('Erro ao gerar insight/embedding:', err.message),
       );
     }
 
     return savedActivity;
   }
 
-  private async generateInsightAndEmbedding(activity: Activity) {
+  private async generateInsightAndEmbedding(
+    activity: Activity,
+    userId: string,
+  ) {
     const prompt = this.buildActivityPrompt(activity);
 
     try {
@@ -64,11 +68,7 @@ export class ActivitiesService {
       console.error('Falha ao gerar embedding:', (error as Error).message);
     }
 
-    try {
-      await this.insightsService.createFromActivity(activity);
-    } catch (error: unknown) {
-      console.error('Falha ao gerar insight:', (error as Error).message);
-    }
+    await this.insightsService.generateIfMissing(activity, userId);
   }
 
   private buildActivityPrompt(activity: Activity): string {
@@ -91,8 +91,14 @@ Max Watts: ${format(activity.max_watts, ' W')}
     `.trim();
   }
 
-  async findAll(page = 1, limit = 20, period?: string, year?: string) {
-    const where: any = {};
+  async findAll(
+    userId: string,
+    page = 1,
+    limit = 20,
+    period?: string,
+    year?: string,
+  ) {
+    const where: FindOptionsWhere<Activity> = { user: { id: userId } };
 
     if (period && period !== 'all') {
       const now = new Date();
@@ -132,11 +138,18 @@ Max Watts: ${format(activity.max_watts, ' W')}
     return { data, total, page, limit };
   }
 
-  async findYears(): Promise<number[]> {
-    const rows = await this.activityRepository.query(
-      'SELECT DISTINCT EXTRACT(YEAR FROM start_date) AS year FROM activities WHERE start_date IS NOT NULL ORDER BY year DESC',
-    );
-    return rows.map((r: { year: string }) => Number(r.year));
+  async findYears(userId: string): Promise<number[]> {
+    const rows = await this.activityRepository
+      .createQueryBuilder('activity')
+      .select('EXTRACT(YEAR FROM activity.start_date)', 'year')
+      .innerJoin('activity.user', 'user')
+      .where('user.id = :userId', { userId })
+      .andWhere('activity.start_date IS NOT NULL')
+      .distinct(true)
+      .orderBy('year', 'DESC')
+      .getRawMany<{ year: string }>();
+
+    return rows.map((row) => Number(row.year));
   }
 
   async findOne(id: string | number) {
@@ -151,6 +164,23 @@ Max Watts: ${format(activity.max_watts, ' W')}
     }
 
     return this.activityRepository.findOneBy({ activityStravaId: Number(id) });
+  }
+
+  async findOneForUser(id: string, userId: string) {
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        id,
+      );
+
+    if (isUuid) {
+      return this.activityRepository.findOne({
+        where: { id, user: { id: userId } },
+      });
+    }
+
+    return this.activityRepository.findOne({
+      where: { activityStravaId: Number(id), user: { id: userId } },
+    });
   }
 
   async upsert(createActivityDto: CreateActivityDto, user: User) {
@@ -172,10 +202,20 @@ Max Watts: ${format(activity.max_watts, ' W')}
       existing.start_date = createActivityDto.startDate;
       existing.start_date_local = createActivityDto.startDateLocal;
       existing.timezone = createActivityDto.timezone;
-      existing.laps = createActivityDto.laps as StravaLap[] | undefined;
-      existing.average_heartrate = createActivityDto.average_heartrate;
-      existing.max_heartrate = createActivityDto.max_heartrate;
-      existing.max_watts = createActivityDto.max_watts;
+      // Campos vindos apenas do detalhe da atividade (ausentes no summary
+      // do Strava): nunca apagar valores já gravados com undefined.
+      if (createActivityDto.laps != null) {
+        existing.laps = createActivityDto.laps as StravaLap[] | undefined;
+      }
+      if (createActivityDto.average_heartrate != null) {
+        existing.average_heartrate = createActivityDto.average_heartrate;
+      }
+      if (createActivityDto.max_heartrate != null) {
+        existing.max_heartrate = createActivityDto.max_heartrate;
+      }
+      if (createActivityDto.max_watts != null) {
+        existing.max_watts = createActivityDto.max_watts;
+      }
 
       return this.activityRepository.save(existing);
     }

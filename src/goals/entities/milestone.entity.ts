@@ -31,7 +31,7 @@ export class Milestone {
   @JoinColumn({ name: 'goalId' })
   goal!: Goal;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt?: Date;
 
   @BeforeInsert()

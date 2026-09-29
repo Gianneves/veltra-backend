@@ -35,7 +35,7 @@ function makeSession(
     id: 'session-1',
     planId: 'plan-1',
     day: 'Ter',
-    dayOrder: 2,
+    dayOrder: 1,
     type: 'long_run',
     plannedDistance: 16000,
     plannedPace: 400,
@@ -67,15 +67,25 @@ function createService(options?: {
       Promise.resolve(options?.aiPick ?? null),
     ),
   };
+  const volumeAdjustment = {
+    adjustForOvershoot: jest.fn(() => Promise.resolve()),
+  };
 
   const service = new ActivityMatcherService(
     planRepository as any,
     sessionRepository as any,
     activityRepository as any,
     aiService as any,
+    volumeAdjustment as any,
   );
 
-  return { service, planRepository, sessionRepository, aiService };
+  return {
+    service,
+    planRepository,
+    sessionRepository,
+    aiService,
+    volumeAdjustment,
+  };
 }
 
 describe('ActivityMatcherService', () => {
@@ -128,7 +138,7 @@ describe('ActivityMatcherService', () => {
   });
 
   describe('matchActivity', () => {
-    const weekStart = new Date(2026, 8, 13); // domingo local
+    const weekStart = new Date(2026, 8, 14); // segunda local
 
     it('vincula automaticamente longão no mesmo dia', async () => {
       const session = makeSession();
@@ -209,7 +219,7 @@ describe('ActivityMatcherService', () => {
       const tempo = makeSession({
         id: 'session-tempo',
         day: 'Ter',
-        dayOrder: 2,
+        dayOrder: 1,
         type: 'tempo',
         plannedDistance: 6500,
         plannedPace: 365,
@@ -254,7 +264,7 @@ describe('ActivityMatcherService', () => {
       const tempo = makeSession({
         id: 'session-tempo',
         day: 'Ter',
-        dayOrder: 2,
+        dayOrder: 1,
         type: 'tempo',
         plannedDistance: 6500,
         plannedPace: 365,
@@ -263,7 +273,7 @@ describe('ActivityMatcherService', () => {
       const fartlek = makeSession({
         id: 'session-fartlek',
         day: 'Qui',
-        dayOrder: 4,
+        dayOrder: 3,
         type: 'fartlek',
         plannedDistance: 5600,
         plannedPace: 355,
@@ -275,7 +285,7 @@ describe('ActivityMatcherService', () => {
       const distantInterval = makeSession({
         id: 'session-distant',
         day: 'Qui',
-        dayOrder: 4,
+        dayOrder: 3,
         type: 'interval',
         plannedDistance: 14800,
         plannedPace: 356,
@@ -324,7 +334,7 @@ describe('ActivityMatcherService', () => {
       const tempo = makeSession({
         id: 'session-tempo',
         day: 'Ter',
-        dayOrder: 2,
+        dayOrder: 1,
         type: 'tempo',
         plannedDistance: 6500,
         plannedPace: 365,
@@ -333,7 +343,7 @@ describe('ActivityMatcherService', () => {
       const interval = makeSession({
         id: 'session-interval',
         day: 'Qui',
-        dayOrder: 4,
+        dayOrder: 3,
         type: 'interval',
         plannedDistance: 14800,
         plannedPace: 356,
@@ -378,7 +388,7 @@ describe('ActivityMatcherService', () => {
       const strides = makeSession({
         id: 'session-strides',
         day: 'Ter',
-        dayOrder: 2,
+        dayOrder: 1,
         type: 'interval',
         plannedDistance: 1200,
         plannedPace: 380,
@@ -416,7 +426,7 @@ describe('ActivityMatcherService', () => {
       const easy = makeSession({
         id: 'session-easy',
         day: 'Seg',
-        dayOrder: 1,
+        dayOrder: 0,
         type: 'easy',
         plannedDistance: 3400,
         plannedPace: 450,

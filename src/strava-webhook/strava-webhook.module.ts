@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ActivitiesModule } from 'src/activities/activities.module';
 import { AuthModule } from 'src/auth/auth.module';
+import { InsightsModule } from 'src/insights/insights.module';
 import { RedisModule } from 'src/redis/redis.module';
 import { StravaModule } from 'src/strava/strava.module';
 import { TrainingPlansModule } from 'src/training-plans/training-plans.module';
@@ -18,6 +19,7 @@ import { StravaWebhookService } from './strava-webhook.service';
     UsersModule,
     ActivitiesModule,
     TrainingPlansModule,
+    InsightsModule,
     AuthModule,
   ],
   controllers: [

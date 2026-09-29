@@ -14,7 +14,9 @@ import { GoalsModule } from './goals/goals.module';
 import { TrainingPlansModule } from './training-plans/training-plans.module';
 import { CoachModule } from './coach/coach.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { AchievementsModule } from './achievements/achievements.module';
 import { StravaWebhookModule } from './strava-webhook/strava-webhook.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -50,7 +52,9 @@ import { StravaWebhookModule } from './strava-webhook/strava-webhook.module';
     TrainingPlansModule,
     CoachModule,
     AnalyticsModule,
+    AchievementsModule,
     StravaWebhookModule,
+    HealthModule,
   ],
   controllers: [],
   providers: [

@@ -149,7 +149,7 @@ export class GoalsService {
 
   private getWeekStart(date: Date): Date {
     const start = new Date(date);
-    start.setDate(date.getDate() - date.getDay());
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
     start.setHours(0, 0, 0, 0);
     return start;
   }

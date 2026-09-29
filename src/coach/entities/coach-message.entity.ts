@@ -24,13 +24,19 @@ export class CoachMessage {
   @Column({ type: 'text' })
   content!: string;
 
+  @Column({ type: 'jsonb', nullable: true })
+  proposals?: object[] | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  rejections?: object[] | null;
+
   @ManyToOne(() => CoachConversation, (conv) => conv.messages, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'conversationId' })
   conversation!: CoachConversation;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt?: Date;
 
   @BeforeInsert()

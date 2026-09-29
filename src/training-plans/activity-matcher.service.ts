@@ -5,22 +5,17 @@ import { Activity } from 'src/activities/entities/activity.entity';
 import { AiService } from 'src/ai/ai.service';
 import { TrainingPlan } from './entities/training-plan.entity';
 import { TrainingSession } from './entities/training-session.entity';
+import { VolumeAdjustmentService } from './volume-adjustment.service';
+import {
+  ActivityFeatures,
+  ActivityShape,
+  buildActivityFeatures,
+  normalizeText,
+  repPatternsFromText,
+  repSizesFromText,
+} from './activity-features';
 
-export type ActivityShape = 'interval' | 'long' | 'steady';
-
-export interface ActivityFeatures {
-  distanceKm: number;
-  pace: number;
-  movingTime: number;
-  name: string;
-  shape: ActivityShape;
-  paceVariability: number;
-  hardLaps: number;
-  lapCount: number;
-  maxSpeedRatio: number;
-  repSizes: string[];
-  localDate: Date;
-}
+export type { ActivityFeatures, ActivityShape };
 
 export interface MatchCandidate {
   session: TrainingSession;
@@ -64,71 +59,11 @@ export class ActivityMatcherService {
     @InjectRepository(Activity)
     private readonly activityRepository: Repository<Activity>,
     private readonly aiService: AiService,
+    private readonly volumeAdjustment: VolumeAdjustmentService,
   ) {}
 
   buildFeatures(activity: Activity): ActivityFeatures {
-    const distanceKm = activity.distance / 1000;
-    const pace = distanceKm > 0 ? activity.moving_time / distanceKm : 0;
-    const localDate =
-      activity.start_date_local ?? activity.start_date ?? new Date();
-
-    const laps = (activity.laps ?? []).filter(
-      (lap) => lap.distance >= 200 && lap.moving_time > 0,
-    );
-    const lapPaces = laps.map((lap) => lap.moving_time / (lap.distance / 1000));
-
-    const meanPace =
-      lapPaces.length > 0
-        ? lapPaces.reduce((sum, value) => sum + value, 0) / lapPaces.length
-        : 0;
-
-    const variance =
-      lapPaces.length > 1 && meanPace > 0
-        ? lapPaces.reduce(
-            (sum, value) => sum + Math.pow(value - meanPace, 2),
-            0,
-          ) / lapPaces.length
-        : 0;
-
-    const paceVariability = meanPace > 0 ? Math.sqrt(variance) / meanPace : 0;
-
-    const hardPaceThreshold = pace > 0 ? pace * 0.92 : 0;
-    const hardLaps = lapPaces.filter(
-      (value) => hardPaceThreshold > 0 && value <= hardPaceThreshold,
-    ).length;
-
-    const maxSpeedRatio =
-      activity.average_speed && activity.max_speed
-        ? activity.max_speed / activity.average_speed
-        : 0;
-
-    let shape: ActivityShape = 'steady';
-    if (lapPaces.length >= 4 && (paceVariability >= 0.075 || hardLaps >= 3)) {
-      shape = 'interval';
-    } else if (
-      maxSpeedRatio >= 1.4 &&
-      (paceVariability >= 0.06 || hardLaps >= 2)
-    ) {
-      shape = 'interval';
-    } else if (distanceKm >= 12) {
-      shape = 'long';
-    } else if (paceVariability >= 0.06 && hardLaps >= 2) {
-      shape = 'interval';
-    }
-
-    return {
-      distanceKm,
-      pace,
-      movingTime: activity.moving_time,
-      name: activity.name ?? '',
-      shape,
-      paceVariability,
-      hardLaps,
-      lapCount: lapPaces.length,
-      maxSpeedRatio,
-      repSizes: this.repSizes(activity.name ?? ''),
-      localDate,
-    };
+    return buildActivityFeatures(activity);
   }
 
   scoreSession(
@@ -195,7 +130,7 @@ export class ActivityMatcherService {
   ): boolean {
     if (activityRepSizes.length === 0) return false;
 
-    const sessionRepSizes = this.repSizes(
+    const sessionRepSizes = repSizesFromText(
       `${session.notes ?? ''} ${session.type}`,
     );
 
@@ -372,6 +307,15 @@ export class ActivityMatcherService {
     session.completed = true;
 
     await this.sessionRepository.save(session);
+
+    try {
+      await this.volumeAdjustment.adjustForOvershoot(session);
+    } catch (err) {
+      console.error(
+        'Erro ao ajustar volume da semana:',
+        (err as Error).message,
+      );
+    }
   }
 
   private clearSessionMatch(session: TrainingSession): void {
@@ -429,8 +373,8 @@ export class ActivityMatcherService {
     activityName: string,
     session: TrainingSession,
   ): number {
-    const name = this.normalize(activityName);
-    const sessionText = this.normalize(
+    const name = normalizeText(activityName);
+    const sessionText = normalizeText(
       `${session.notes ?? ''} ${session.type ?? ''}`,
     );
 
@@ -440,8 +384,8 @@ export class ActivityMatcherService {
     const hits = tokens.filter((t) => sessionText.includes(t)).length;
     let score = tokens.length > 0 ? hits / tokens.length : 0;
 
-    const activityReps = this.repPatterns(name);
-    const sessionReps = this.repPatterns(sessionText);
+    const activityReps = repPatternsFromText(name);
+    const sessionReps = repPatternsFromText(sessionText);
     if (
       activityReps.length > 0 &&
       activityReps.some((rep) => sessionReps.includes(rep))
@@ -452,40 +396,6 @@ export class ActivityMatcherService {
     return score;
   }
 
-  private repPatterns(text: string): string[] {
-    const matches: string[] = text.match(/\d+\s*x\s*\d+/g) ?? [];
-    return matches.map((rep) => rep.replace(/\s+/g, ''));
-  }
-
-  private repSizes(text: string): string[] {
-    const normalized = this.normalize(text);
-    const sizes = new Set<string>();
-
-    for (const match of normalized.matchAll(
-      /(\d+)\s*x\s*(\d+(?:[.,]\d+)?)\s*(km|m)?/g,
-    )) {
-      const value = Number(match[2].replace(',', '.'));
-      const unit = match[3] ?? (value >= 100 ? 'm' : '');
-      if (!unit) continue;
-      sizes.add(unit === 'km' ? `${value * 1000}m` : `${value}m`);
-    }
-
-    for (const match of normalized.matchAll(
-      /(\d+)\s*x\s*\(?\s*(\d+)\s*(min|s)\b/g,
-    )) {
-      sizes.add(`${Number(match[2])}${match[3]}`);
-    }
-
-    return [...sizes];
-  }
-
-  private normalize(value: string): string {
-    return value
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
-  }
-
   private startOfDay(date: Date): Date {
     const day = new Date(date);
     day.setHours(0, 0, 0, 0);
@@ -494,7 +404,7 @@ export class ActivityMatcherService {
 
   private getWeekStart(date: Date): Date {
     const start = this.startOfDay(date);
-    start.setDate(start.getDate() - start.getDay());
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
     return start;
   }
 

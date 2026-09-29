@@ -1,6 +1,14 @@
 import type { AthleteLevel } from './athlete-profile.service';
+import { RepSet, repSizesFromText } from './activity-features';
 
 export type QualityType = 'interval' | 'tempo' | 'fartlek';
+
+export interface WorkoutPreferences {
+  primaryType?: QualityType;
+  secondaryType?: QualityType;
+  typicalReps?: Partial<Record<QualityType, string[]>>;
+  typicalMainKm?: Partial<Record<QualityType, number>>;
+}
 export type PlanPhase = 'base' | 'build' | 'peak' | 'taper';
 export type PaceRef = 'interval' | 'threshold' | 'goal';
 
@@ -14,6 +22,7 @@ export interface QualityWorkout {
   paceRef: PaceRef;
   paceAdjust: number;
   notes: string;
+  fromHistory?: boolean;
 }
 
 export interface WeekWorkouts {
@@ -426,6 +435,24 @@ export function raceSpecificWorkout(raceKm: number): QualityWorkout {
   };
 }
 
+export function phaseWorkoutPool(
+  level: AthleteLevel,
+  phase: PlanPhase,
+): QualityWorkout[] {
+  return ROTATIONS[level][phase].map((key) => WORKOUTS[key]);
+}
+
+export function workoutsOfType(type: QualityType): QualityWorkout[] {
+  return Object.values(WORKOUTS).filter((workout) => workout.type === type);
+}
+
+export function secondaryWorkoutPool(
+  level: AthleteLevel,
+  phase: PlanPhase,
+): QualityWorkout[] {
+  return SECONDARY[level][phase].map((key) => WORKOUTS[key]);
+}
+
 export function selectWeekWorkouts(opts: {
   level: AthleteLevel;
   phase: PlanPhase;
@@ -434,6 +461,7 @@ export function selectWeekWorkouts(opts: {
   raceKm: number;
   hasSecondaryDay: boolean;
   deload: boolean;
+  preferences?: WorkoutPreferences;
 }): WeekWorkouts {
   const {
     level,
@@ -443,6 +471,7 @@ export function selectWeekWorkouts(opts: {
     raceKm,
     hasSecondaryDay,
     deload,
+    preferences,
   } = opts;
 
   if (deload) {
@@ -464,18 +493,69 @@ export function selectWeekWorkouts(opts: {
     return {
       primary,
       secondary: hasSecondaryDay
-        ? pickSecondary(level, phase, phaseWeekIndex, primary)
+        ? pickSecondary(level, phase, phaseWeekIndex, primary, preferences)
         : undefined,
     };
   }
 
-  const rotation = ROTATIONS[level][phase];
-  const workout = WORKOUTS[rotation[phaseWeekIndex % rotation.length]];
+  const pool = orderWorkoutPool(
+    phaseWorkoutPool(level, phase),
+    preferences,
+    preferences?.primaryType,
+  );
+  const workout = pool[phaseWeekIndex % pool.length];
   const secondary = hasSecondaryDay
-    ? pickSecondary(level, phase, phaseWeekIndex, workout)
+    ? pickSecondary(level, phase, phaseWeekIndex, workout, preferences)
     : undefined;
 
   return { primary: workout, secondary };
+}
+
+export function orderWorkoutPool(
+  pool: QualityWorkout[],
+  preferences: WorkoutPreferences | undefined,
+  preferredType: QualityType | undefined,
+): QualityWorkout[] {
+  if (!preferredType) return pool;
+
+  const score = (workout: QualityWorkout) =>
+    workoutFamiliarity(workout, preferences);
+  const sortFamiliar = (list: QualityWorkout[]) =>
+    [...list].sort((a, b) => score(b) - score(a));
+
+  const preferred = sortFamiliar(
+    pool.filter((workout) => workout.type === preferredType),
+  );
+  const others = sortFamiliar(
+    pool.filter((workout) => workout.type !== preferredType),
+  );
+
+  const ordered = [...preferred, ...others];
+  return ordered.length > 0 ? ordered : pool;
+}
+
+function workoutFamiliarity(
+  workout: QualityWorkout,
+  preferences?: WorkoutPreferences,
+): number {
+  if (!preferences) return 0;
+
+  const typicalReps = preferences.typicalReps?.[workout.type] ?? [];
+  const repMatch =
+    typicalReps.length > 0 &&
+    repSizesFromText(`${workout.label} ${workout.notes}`).some((size) =>
+      typicalReps.includes(size),
+    )
+      ? 2
+      : 0;
+
+  const typicalMainKm = preferences.typicalMainKm?.[workout.type];
+  const mainKm = workout.mainKm;
+
+  if (!typicalMainKm || !mainKm) return repMatch;
+
+  const gap = Math.abs(mainKm - typicalMainKm) / Math.max(typicalMainKm, 1);
+  return repMatch + Math.max(0, 1 - gap);
 }
 
 function pickSecondary(
@@ -483,14 +563,61 @@ function pickSecondary(
   phase: PlanPhase,
   phaseWeekIndex: number,
   primary: QualityWorkout,
+  preferences?: WorkoutPreferences,
 ): QualityWorkout | undefined {
-  const keys = SECONDARY[level][phase];
-  if (keys.length === 0) return undefined;
+  const candidates = secondaryWorkoutPool(level, phase).filter(
+    (workout) => workout.type !== primary.type,
+  );
+  if (candidates.length === 0) return undefined;
 
-  for (let offset = 0; offset < keys.length; offset++) {
-    const candidate = WORKOUTS[keys[(phaseWeekIndex + offset) % keys.length]];
-    if (candidate.type !== primary.type) return candidate;
+  const ordered = orderWorkoutPool(
+    candidates,
+    preferences,
+    preferences?.secondaryType,
+  );
+
+  return ordered[phaseWeekIndex % ordered.length];
+}
+
+export function historyIntervalWorkout(opts: {
+  repSet: RepSet;
+  phase: PlanPhase;
+  deload: boolean;
+}): QualityWorkout {
+  const { repSet, phase, deload } = opts;
+  const baseReps = Math.max(2, Math.min(Math.round(repSet.count), 20));
+  let reps = baseReps;
+  let paceAdjust = 0;
+
+  if (deload) {
+    reps = Math.max(2, baseReps - 2);
+    paceAdjust = 15;
+  } else if (phase === 'build') {
+    reps = Math.min(baseReps + 1, 14);
+    paceAdjust = -3;
+  } else if (phase === 'peak') {
+    reps = Math.min(baseReps + 2, 14);
+    paceAdjust = -6;
   }
 
-  return undefined;
+  return {
+    key: `history-interval-${reps}x${repSet.size}`,
+    type: 'interval',
+    label: `${reps}x${repSet.size}`,
+    mainKm: reps * repSet.sizeKm,
+    paceRef: 'interval',
+    paceAdjust,
+    notes: `${reps} repetições de ${repSet.size} em ritmo forte e controlado, com recuperação ativa entre elas. Alvo: pace médio por tiro {pace} — mantenha o esforço parelho do início ao fim.`,
+    fromHistory: true,
+  };
+}
+
+export function qualityMainScale(
+  weeklyKm: number,
+  qualityMainKm: number,
+  maxRatio: number,
+): number {
+  const maxQuality = weeklyKm * maxRatio;
+  if (qualityMainKm <= 0 || qualityMainKm <= maxQuality) return 1;
+  return Math.max(0, maxQuality / qualityMainKm);
 }

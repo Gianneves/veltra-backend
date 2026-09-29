@@ -8,6 +8,7 @@ import {
 import type { Request } from 'express';
 import { ActivitiesService } from 'src/activities/activities.service';
 import { AuthSessionService } from 'src/auth/auth-session.service';
+import { InsightsService } from 'src/insights/insights.service';
 import { StravaService } from 'src/strava/strava.service';
 import { ActivityMatcherService } from 'src/training-plans/activity-matcher.service';
 import { UsersService } from 'src/users/users.service';
@@ -26,6 +27,7 @@ export class StravaSyncController {
     private readonly matcher: ActivityMatcherService,
     private readonly tokenService: StravaTokenService,
     private readonly webhookService: StravaWebhookService,
+    private readonly insightsService: InsightsService,
     private readonly sessionService: AuthSessionService,
   ) {}
 
@@ -52,11 +54,13 @@ export class StravaSyncController {
     let synced = 0;
     let matched = 0;
 
-    for (const detail of activities) {
-      const start = detail.start_date
-        ? new Date(detail.start_date).getTime()
+    for (const summary of activities) {
+      const start = summary.start_date
+        ? new Date(summary.start_date).getTime()
         : 0;
       if (start < cutoff) continue;
+
+      const detail = await this.fetchDetail(summary, token);
 
       const saved = await this.activitiesService.upsert(
         this.webhookService.toActivityDto(detail),
@@ -64,10 +68,33 @@ export class StravaSyncController {
       );
 
       const result = await this.matcher.matchActivity(user.id, saved);
+      void this.insightsService.generateIfMissing(saved, user.id);
       synced += 1;
       if (result.matched) matched += 1;
     }
 
     return { synced, matched, days };
+  }
+
+  private async fetchDetail(
+    summary: Activity,
+    token: string,
+  ): Promise<Activity> {
+    if (!summary.has_heartrate) return summary;
+
+    try {
+      const detail = await this.stravaService.fetchActivityById(
+        summary.id as number,
+        token,
+      );
+      if (detail) return { ...summary, ...detail };
+    } catch (err) {
+      console.error(
+        `Falha ao buscar detalhe da atividade ${summary.id}:`,
+        (err as Error).message,
+      );
+    }
+
+    return summary;
   }
 }

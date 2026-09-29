@@ -6,12 +6,14 @@ import { User } from './entities/user.entity';
 import { Activity } from 'src/activities/entities/activity.entity';
 import { StravaModule } from 'src/strava/strava.module';
 import { ActivitiesModule } from 'src/activities/activities.module';
+import { SessionModule } from 'src/auth/session.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, Activity]),
     StravaModule,
     ActivitiesModule,
+    SessionModule,
   ],
   controllers: [UsersController],
   providers: [UsersService],
