@@ -80,4 +80,18 @@ describe('splitCoachReply', () => {
     expect(result.proposals).toHaveLength(5);
     expect(result.malformed).toBe(true);
   });
+
+  it('tolerates code fences and trailing commas in the block', () => {
+    const result = splitCoachReply(
+      'Ajustes.\n<proposta>```json\n[{"session":1,"changes":{"plannedDistance":8000,},"reason":"leve",}]\n```</proposta>',
+    );
+
+    expect(result.text).toBe('Ajustes.');
+    expect(result.proposals).toHaveLength(1);
+    expect(result.proposals[0]).toMatchObject({
+      session: 1,
+      changes: { plannedDistance: 8000 },
+    });
+    expect(result.malformed).toBe(false);
+  });
 });

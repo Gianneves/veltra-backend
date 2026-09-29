@@ -11,6 +11,7 @@ import {
 import type { Request } from 'express';
 import { TrainingPlansService } from './training-plans.service';
 import { UpdateTrainingSessionDto } from './dto/update-training-session.dto';
+import { BatchUpdateSessionsDto } from './dto/batch-update-sessions.dto';
 import { AuthSessionService } from 'src/auth/auth-session.service';
 
 @Controller('training-plans')
@@ -48,6 +49,20 @@ export class TrainingPlansController {
   async regenerate(@Req() req: Request) {
     const userId = await this.sessionService.resolveUserId(req);
     return this.trainingPlansService.regenerateForUser(userId);
+  }
+
+  @Put(':planId/sessions/batch')
+  async updateSessionsBatch(
+    @Param('planId') planId: string,
+    @Body() data: BatchUpdateSessionsDto,
+    @Req() req: Request,
+  ) {
+    const userId = await this.sessionService.resolveUserId(req);
+    return this.trainingPlansService.updateSessionsBatch(
+      planId,
+      userId,
+      data.items,
+    );
   }
 
   @Put(':planId/sessions/:sessionId/activity')

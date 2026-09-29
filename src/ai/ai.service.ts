@@ -95,13 +95,21 @@ function parseProposalItem(raw: unknown): CoachProposal | null {
   };
 }
 
+function cleanProposalBlock(block: string): string {
+  // O modelo às vezes envolve o JSON em code fence ou deixa trailing comma.
+  return block
+    .replace(/```(?:json)?/gi, '')
+    .replace(/,(\s*[}\]])/g, '$1')
+    .trim();
+}
+
 function parseProposalBlock(block: string): {
   proposals: CoachProposal[];
   malformed: boolean;
 } {
   let raw: unknown;
   try {
-    raw = JSON.parse(block.trim());
+    raw = JSON.parse(cleanProposalBlock(block));
   } catch {
     console.warn(
       'Bloco de proposta inválido do coach:',

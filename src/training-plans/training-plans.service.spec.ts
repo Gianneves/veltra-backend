@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { TrainingPlansService } from './training-plans.service';
 import { qualityMainScale, resolvePhase } from './workout-library';
 import { TrainingPattern, emptyTrainingPattern } from './training-pattern';
@@ -940,5 +941,195 @@ describe('TrainingPlansService', () => {
       'Sem corridas nas últimas 3 semanas',
     );
     expect(sessions.length).toBeGreaterThan(0);
+  });
+});
+
+describe('updateSessionsBatch', () => {
+  interface BatchRow {
+    id: string;
+    day: string;
+    dayOrder: number;
+    type: string;
+    plannedDistance: number;
+    plannedPace: number;
+    planId?: string;
+  }
+
+  function batchMocks(initial: BatchRow[]) {
+    const store = new Map<string, BatchRow>(
+      initial.map((s) => [s.id, { ...s, planId: 'plan-1' }]),
+    );
+    const planRepository = {
+      findOne: jest.fn(() =>
+        Promise.resolve({ id: 'plan-1', userId: 'user-1' }),
+      ),
+    };
+    const sessionRepository = {
+      find: jest.fn(
+        (): Promise<BatchRow[]> => Promise.resolve([...store.values()]),
+      ),
+      findOne: jest.fn(
+        ({
+          where,
+        }: {
+          where: { id?: string; day?: string };
+        }): Promise<BatchRow | null> =>
+          Promise.resolve(
+            where?.id
+              ? (store.get(where.id) ?? null)
+              : ([...store.values()].find((s) => s.day === where?.day) ?? null),
+          ),
+      ),
+      save: jest.fn((s: BatchRow): Promise<BatchRow> => Promise.resolve(s)),
+    };
+    const athleteProfileService = {
+      getAge: jest.fn(
+        (): Promise<number | undefined> => Promise.resolve(undefined),
+      ),
+    };
+    const manager = {
+      getRepository: () => ({
+        findOne: jest.fn(
+          ({ where }: { where: { id: string } }): Promise<BatchRow | null> =>
+            Promise.resolve(store.get(where.id) ?? null),
+        ),
+        save: jest.fn((s: BatchRow): Promise<BatchRow> => {
+          store.set(s.id, { ...s });
+          return Promise.resolve({ ...s });
+        }),
+      }),
+    };
+    const dataSource = {
+      transaction: jest.fn(
+        (
+          fn: (manager: typeof manager) => Promise<BatchRow[]>,
+        ): Promise<BatchRow[]> => fn(manager),
+      ),
+    };
+    const service = new TrainingPlansService(
+      planRepository as any,
+      sessionRepository as any,
+      {} as any,
+      {} as any,
+      athleteProfileService as any,
+      {} as any,
+      {} as any,
+      dataSource as any,
+    );
+    return { service, store, sessionRepository, dataSource };
+  }
+
+  it('aplica swap de dias em lote de forma atômica', async () => {
+    const { service, store } = batchMocks([
+      {
+        id: 'a',
+        day: 'Ter',
+        dayOrder: 1,
+        type: 'easy',
+        plannedDistance: 8000,
+        plannedPace: 360,
+      },
+      {
+        id: 'b',
+        day: 'Qui',
+        dayOrder: 3,
+        type: 'tempo',
+        plannedDistance: 6000,
+        plannedPace: 340,
+      },
+    ]);
+
+    const updated = await service.updateSessionsBatch('plan-1', 'user-1', [
+      { sessionId: 'a', day: 'Qui' },
+      { sessionId: 'b', day: 'Ter' },
+    ]);
+
+    expect(updated).toHaveLength(2);
+    expect(store.get('a')?.day).toBe('Qui');
+    expect(store.get('a')?.dayOrder).toBe(3);
+    expect(store.get('b')?.day).toBe('Ter');
+  });
+
+  it('rejeita lote que criaria dia duplicado sem aplicar nada', async () => {
+    const { service, store, dataSource } = batchMocks([
+      {
+        id: 'a',
+        day: 'Ter',
+        dayOrder: 1,
+        type: 'easy',
+        plannedDistance: 8000,
+        plannedPace: 360,
+      },
+      {
+        id: 'b',
+        day: 'Qui',
+        dayOrder: 3,
+        type: 'tempo',
+        plannedDistance: 6000,
+        plannedPace: 340,
+      },
+    ]);
+
+    const promise = service.updateSessionsBatch('plan-1', 'user-1', [
+      { sessionId: 'a', day: 'Qui' },
+    ]);
+
+    await expect(promise).rejects.toBeInstanceOf(BadRequestException);
+    await expect(promise).rejects.toMatchObject({
+      response: { code: 'DAY_COLLISION' },
+    });
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+    expect(store.get('a')?.day).toBe('Ter');
+  });
+
+  it('converte treino em descanso zerando distância e pace', async () => {
+    const { service, store } = batchMocks([
+      {
+        id: 'a',
+        day: 'Ter',
+        dayOrder: 1,
+        type: 'easy',
+        plannedDistance: 8000,
+        plannedPace: 360,
+      },
+    ]);
+
+    await service.updateSessionsBatch('plan-1', 'user-1', [
+      { sessionId: 'a', type: 'rest' },
+    ]);
+
+    expect(store.get('a')?.type).toBe('rest');
+    expect(store.get('a')?.plannedDistance).toBe(0);
+    expect(store.get('a')?.plannedPace).toBe(0);
+  });
+
+  it('rejeita dia duplicado no PUT individual', async () => {
+    const { service } = batchMocks([
+      {
+        id: 'a',
+        day: 'Ter',
+        dayOrder: 1,
+        type: 'easy',
+        plannedDistance: 8000,
+        plannedPace: 360,
+      },
+      {
+        id: 'b',
+        day: 'Qui',
+        dayOrder: 3,
+        type: 'tempo',
+        plannedDistance: 6000,
+        plannedPace: 340,
+      },
+    ]);
+
+    const promise = service.updateSession('plan-1', 'a', 'user-1', {
+      day: 'Qui',
+    });
+
+    await expect(promise).rejects.toBeInstanceOf(BadRequestException);
+    await expect(promise).rejects.toMatchObject({
+      response: { code: 'DAY_COLLISION' },
+    });
   });
 });

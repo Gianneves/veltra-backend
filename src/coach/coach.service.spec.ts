@@ -54,11 +54,13 @@ describe('CoachService', () => {
     create: jest.Mock;
     save: jest.Mock;
     update: jest.Mock;
+    delete: jest.Mock;
   };
   let messageRepository: {
     find: jest.Mock;
     create: jest.Mock;
     save: jest.Mock;
+    delete: jest.Mock;
   };
   let goalRepository: { findOne: jest.Mock };
   let planRepository: { find: jest.Mock; findOne: jest.Mock };
@@ -84,6 +86,7 @@ describe('CoachService', () => {
         }),
       ),
       update: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(undefined),
     };
     messageRepository = {
       find: jest.fn().mockResolvedValue([]),
@@ -95,6 +98,7 @@ describe('CoachService', () => {
           createdAt: new Date('2026-05-01T10:00:00Z'),
         }),
       ),
+      delete: jest.fn().mockResolvedValue(undefined),
     };
     const upcomingSession = {
       id: 'session-1',
@@ -264,24 +268,28 @@ describe('CoachService', () => {
     expect(result.rejections[0].code).toBe('OUT_OF_RANGE');
   });
 
-  it('rejects proposals for rest sessions', async () => {
-    aiService.generateCoachReplyStream.mockResolvedValue({
-      text: 'Sugiro ajustar.',
-      proposal: {
-        session: 1,
-        changes: { day: 'Ter' },
-        reason: 'Mudança',
-      },
-    });
+  it('activates future rest sessions and still blocks past ones', async () => {
     sessionRepository.findOne.mockResolvedValue({
-      id: 'session-1',
+      id: 'session-rest',
       planId: 'plan-1',
-      day: 'Sáb',
-      dayOrder: 5,
+      day: 'Seg',
+      dayOrder: 0,
       type: 'rest',
       plannedDistance: 0,
       plannedPace: 0,
       plan: { id: 'plan-1', userId: 'user-1', weekStart: futureWeekStart(7) },
+    });
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Sugiro ativar.',
+      proposal: {
+        session: 1,
+        changes: {
+          type: 'easy',
+          plannedDistance: 5000,
+          plannedPace: 360,
+        },
+        reason: 'Ativar',
+      },
     });
 
     const result = await service.streamMessage(
@@ -291,9 +299,42 @@ describe('CoachService', () => {
       jest.fn(),
     );
 
-    expect(result.proposal).toBeNull();
-    expect(result.rejections).toHaveLength(1);
-    expect(result.rejections[0].code).toBe('PAST_OR_REST');
+    expect(result.proposal).toMatchObject({ sessionId: 'session-rest' });
+    expect(result.proposal?.changes.type).toBe('easy');
+    expect(result.rejections).toHaveLength(0);
+
+    sessionRepository.findOne.mockResolvedValue({
+      id: 'session-rest-past',
+      planId: 'plan-1',
+      day: 'Seg',
+      dayOrder: 0,
+      type: 'rest',
+      plannedDistance: 0,
+      plannedPace: 0,
+      plan: { id: 'plan-1', userId: 'user-1', weekStart: futureWeekStart(-14) },
+    });
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Sugiro ativar.',
+      proposal: {
+        session: 1,
+        changes: {
+          type: 'easy',
+          plannedDistance: 5000,
+          plannedPace: 360,
+        },
+        reason: 'Ativar',
+      },
+    });
+
+    const past = await service.streamMessage(
+      'user-1',
+      'Posso mudar?',
+      'conv-1',
+      jest.fn(),
+    );
+    expect(past.proposal).toBeNull();
+    expect(past.rejections).toHaveLength(1);
+    expect(past.rejections[0].code).toBe('PAST_OR_REST');
   });
 
   it('rejects proposals for past sessions or other users', async () => {
@@ -347,7 +388,7 @@ describe('CoachService', () => {
     expect(foreign.rejections[0].code).toBe('INVALID_SESSION');
   });
 
-  it('groups rest days and keeps them out of proposal numbering', async () => {
+  it('numbers future rest days and keeps past ones out of proposals', async () => {
     planRepository.find.mockResolvedValue([
       {
         id: 'plan-2',
@@ -396,10 +437,12 @@ describe('CoachService', () => {
 
     expect(systemPrompt).toContain('Próxima semana (');
     expect(systemPrompt).toContain('[1] Dom');
-    expect(systemPrompt).toContain('[2] Ter');
-    expect(systemPrompt).not.toContain('[3]');
-    expect(systemPrompt).toContain('- Descanso: Seg');
-    expect(systemPrompt).toContain('Sáb');
+    expect(systemPrompt).toContain('[2] Seg');
+    expect(systemPrompt).toContain('descanso (descanso futuro');
+    expect(systemPrompt).toContain('[3] Ter');
+    expect(systemPrompt).toContain('[4] Sáb');
+    expect(systemPrompt).toContain('Resumo da semana: 2 treinos, 24.6 km');
+    expect(systemPrompt).not.toContain('- Descanso:');
     expect(systemPrompt).toContain('Próximo longão: Dom');
     expect(systemPrompt).toContain('19.5 km');
     expect(systemPrompt).toContain('Não liste sessões de descanso');
@@ -438,8 +481,7 @@ describe('CoachService', () => {
 
     expect(systemPrompt).toContain('(passado — não pode ser alterado)');
     expect(systemPrompt).not.toMatch(/\[\d+\] Dom/);
-    expect(systemPrompt).toContain('- Descanso: Seg');
-    expect(systemPrompt).toContain('(passado)');
+    expect(systemPrompt).toContain('- Descanso passado: Seg');
   });
 
   it('maps proposal numbers past rest days to the right workout', async () => {
@@ -490,7 +532,7 @@ describe('CoachService', () => {
     aiService.generateCoachReplyStream.mockResolvedValue({
       text: 'Sugiro ajustar.',
       proposal: {
-        session: 2,
+        session: 3,
         changes: { plannedDistance: 5500 },
         reason: 'Ajuste leve',
       },
@@ -705,6 +747,169 @@ describe('CoachService', () => {
     expect(collision.rejections[0].code).toBe('DAY_COLLISION');
   });
 
+  it('rejects moves to days already occupied in the plan', async () => {
+    const weekStart = futureWeekStart(7);
+    const sessionA = buildSession({
+      id: 'session-a',
+      day: 'Ter',
+      dayOrder: 1,
+      type: 'easy',
+      plannedDistance: 8000,
+      plannedPace: 360,
+    });
+    const sessionRest = buildSession({
+      id: 'session-rest',
+      day: 'Seg',
+      dayOrder: 0,
+      type: 'rest',
+    });
+    const sessionB = buildSession({
+      id: 'session-b',
+      day: 'Qui',
+      dayOrder: 3,
+      type: 'tempo',
+      plannedDistance: 6000,
+      plannedPace: 340,
+    });
+    planRepository.find.mockResolvedValue([
+      { id: 'plan-2', weekStart, sessions: [sessionA, sessionRest, sessionB] },
+    ]);
+    const byId: Record<string, object> = {
+      'session-a': {
+        ...sessionA,
+        actualDistance: null,
+        actualPace: null,
+        plan: { id: 'plan-2', userId: 'user-1', weekStart },
+      },
+      'session-b': {
+        ...sessionB,
+        actualDistance: null,
+        actualPace: null,
+        plan: { id: 'plan-2', userId: 'user-1', weekStart },
+      },
+    };
+    sessionRepository.findOne.mockImplementation(
+      ({ where }: { where: { id: string } }) =>
+        Promise.resolve(byId[where.id] ?? null),
+    );
+    sessionRepository.find.mockImplementation(
+      (args?: { where?: { planId?: string } }) =>
+        Promise.resolve(
+          args?.where?.planId ? [sessionA, sessionRest, sessionB] : [],
+        ),
+    );
+    // [1] Ter-a, [2] Seg-rest, [3] Qui-b. Mover [1] para Qui sem
+    // contrapartida criaria duas Quis — deve ser rejeitado.
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Move.',
+      proposals: [{ session: 1, changes: { day: 'Qui' }, reason: 'x' }],
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Move?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(result.proposals).toHaveLength(0);
+    expect(result.rejections).toHaveLength(1);
+    expect(result.rejections[0].code).toBe('DAY_COLLISION');
+  });
+
+  it('accepts swaps and workout-to-rest deactivation', async () => {
+    const weekStart = futureWeekStart(7);
+    const sessionA = buildSession({
+      id: 'session-a',
+      day: 'Ter',
+      dayOrder: 1,
+      type: 'easy',
+      plannedDistance: 8000,
+      plannedPace: 360,
+    });
+    const sessionRest = buildSession({
+      id: 'session-rest',
+      day: 'Seg',
+      dayOrder: 0,
+      type: 'rest',
+    });
+    const sessionB = buildSession({
+      id: 'session-b',
+      day: 'Qui',
+      dayOrder: 3,
+      type: 'tempo',
+      plannedDistance: 6000,
+      plannedPace: 340,
+    });
+    planRepository.find.mockResolvedValue([
+      { id: 'plan-2', weekStart, sessions: [sessionA, sessionRest, sessionB] },
+    ]);
+    const byId: Record<string, object> = {
+      'session-a': {
+        ...sessionA,
+        actualDistance: null,
+        actualPace: null,
+        plan: { id: 'plan-2', userId: 'user-1', weekStart },
+      },
+      'session-rest': {
+        ...sessionRest,
+        actualDistance: null,
+        actualPace: null,
+        plan: { id: 'plan-2', userId: 'user-1', weekStart },
+      },
+      'session-b': {
+        ...sessionB,
+        actualDistance: null,
+        actualPace: null,
+        plan: { id: 'plan-2', userId: 'user-1', weekStart },
+      },
+    };
+    sessionRepository.findOne.mockImplementation(
+      ({ where }: { where: { id: string } }) =>
+        Promise.resolve(byId[where.id] ?? null),
+    );
+    sessionRepository.find.mockImplementation(
+      (args?: { where?: { planId?: string } }) =>
+        Promise.resolve(
+          args?.where?.planId ? [sessionA, sessionRest, sessionB] : [],
+        ),
+    );
+
+    // Swap Ter<->Qui com contrapartida: aceito, sem duplicata.
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Troca.',
+      proposals: [
+        { session: 1, changes: { day: 'Qui' }, reason: 'swap' },
+        { session: 3, changes: { day: 'Ter' }, reason: 'swap' },
+      ],
+    });
+
+    const swap = await service.streamMessage(
+      'user-1',
+      'Inverte?',
+      'conv-1',
+      jest.fn(),
+    );
+    expect(swap.proposals).toHaveLength(2);
+    expect(swap.rejections).toHaveLength(0);
+
+    // Redução: desativa o treino de Ter (vira descanso).
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Reduz.',
+      proposals: [{ session: 1, changes: { type: 'rest' }, reason: '3x' }],
+    });
+
+    const reduce = await service.streamMessage(
+      'user-1',
+      'Reduz?',
+      'conv-1',
+      jest.fn(),
+    );
+    expect(reduce.proposals).toHaveLength(1);
+    expect(reduce.proposals[0].changes.type).toBe('rest');
+    expect(reduce.rejections).toHaveLength(0);
+  });
+
   it('rejects unknown session numbers with chat-ready message', async () => {
     aiService.generateCoachReplyStream.mockResolvedValue({
       text: 'Ajuste.',
@@ -802,5 +1007,114 @@ describe('CoachService', () => {
     );
 
     expect(result.message.content).toBe('Continue assim, bom trabalho!');
+  });
+
+  it('retries the proposal block when the reply promises buttons but has none', async () => {
+    aiService.generateCoachReplyStream
+      .mockResolvedValueOnce({
+        text: 'Vou ajustar seus treinos. Clique em Aplicar para salvar.',
+        proposal: null,
+        proposals: [],
+        malformed: false,
+      })
+      .mockResolvedValueOnce({
+        text: '',
+        proposal: {
+          session: 1,
+          changes: { plannedDistance: 11000 },
+          reason: 'ajuste',
+        },
+        proposals: [
+          {
+            session: 1,
+            changes: { plannedDistance: 11000 },
+            reason: 'ajuste',
+          },
+        ],
+        malformed: false,
+      });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Muda meus dias?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(aiService.generateCoachReplyStream).toHaveBeenCalledTimes(2);
+    expect(result.proposals).toHaveLength(1);
+    expect(result.proposals[0].changes.plannedDistance).toBe(11000);
+    expect(result.message.content).not.toContain('não gerei nenhuma mudança');
+  });
+
+  it('keeps the fallback note when the retry also yields nothing', async () => {
+    aiService.generateCoachReplyStream
+      .mockResolvedValueOnce({
+        text: 'Novo plano abaixo. Clique em Aplicar para salvar.',
+        proposal: null,
+        proposals: [],
+        malformed: false,
+      })
+      .mockResolvedValueOnce({
+        text: 'Sem mudanças.',
+        proposal: null,
+        proposals: [],
+        malformed: false,
+      });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Muda meus dias?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(aiService.generateCoachReplyStream).toHaveBeenCalledTimes(2);
+    expect(result.proposals).toHaveLength(0);
+    expect(result.message.content).toContain('não gerei nenhuma mudança');
+  });
+  it('does not retry plain summaries without promised changes', async () => {
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Sua semana está boa. Continue assim!',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como está minha semana?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(aiService.generateCoachReplyStream).toHaveBeenCalledTimes(1);
+    expect(result.proposals).toHaveLength(0);
+    expect(result.message.content).toBe('Sua semana está boa. Continue assim!');
+  });
+
+  it('deletes all conversations and messages for the user', async () => {
+    conversationRepository.find.mockResolvedValue([
+      { id: 'conv-1', userId: 'user-1' },
+      { id: 'conv-2', userId: 'user-1' },
+    ]);
+
+    const result = await service.deleteConversations('user-1');
+
+    expect(result).toEqual({ deleted: true });
+    expect(messageRepository.delete).toHaveBeenCalledTimes(1);
+    expect(conversationRepository.delete).toHaveBeenCalledWith({
+      userId: 'user-1',
+    });
+  });
+
+  it('does nothing when there are no conversations', async () => {
+    conversationRepository.find.mockResolvedValue([]);
+
+    const result = await service.deleteConversations('user-1');
+
+    expect(result).toEqual({ deleted: true });
+    expect(messageRepository.delete).not.toHaveBeenCalled();
+    expect(conversationRepository.delete).not.toHaveBeenCalled();
   });
 });

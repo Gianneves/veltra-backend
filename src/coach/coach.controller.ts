@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Post, Query, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Post,
+  Query,
+  Req,
+  Res,
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { CoachService } from './coach.service';
 import { SendMessageDto } from './dto/send-message.dto';
@@ -33,6 +42,12 @@ export class CoachController {
       dto.content,
       dto.conversationId,
     );
+  }
+
+  @Delete('chat')
+  async deleteConversations(@Req() req: Request) {
+    const userId = await this.sessionService.resolveUserId(req);
+    return this.coachService.deleteConversations(userId);
   }
 
   @Post('chat/stream')
