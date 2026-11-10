@@ -1,0 +1,70 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint changed files
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="origin/$BASE_REF"
+          elif [ -n "${BEFORE_SHA:-}" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            BASE="$BEFORE_SHA"
+          else
+            echo "Sem base para diff; lint incremental ignorado."
+            exit 0
+          fi
+
+          FILES=$(git diff --name-only --diff-filter=ACMR "$BASE"...HEAD -- 'src/**/*.ts' 'test/**/*.ts' || true)
+
+          if [ -z "$FILES" ]; then
+            echo "Nenhum arquivo TypeScript alterado."
+            exit 0
+          fi
+
+          echo "$FILES"
+          echo "$FILES" | xargs -r -d '\n' npx eslint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npx jest --runInBand --testPathIgnorePatterns='auth.service.spec.ts|auth.controller.spec.ts|users.service.spec.ts|insights.service.spec.ts'
