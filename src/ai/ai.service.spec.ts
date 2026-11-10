@@ -1,12 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AiService, splitCoachReply } from './ai.service';
+import { AiModelRouter } from './model-router';
 
 describe('AiService', () => {
   let service: AiService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AiService],
+      providers: [AiService, AiModelRouter],
     }).compile();
 
     service = module.get<AiService>(AiService);
