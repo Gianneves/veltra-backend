@@ -1,5 +1,7 @@
 # Veltra Backend
 
+[![Backend CI](https://github.com/Gianneves/veltra-backend/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/Gianneves/veltra-backend/actions/workflows/backend-ci.yml)
+
 **Veltra** é uma plataforma inteligente de corrida que conecta atletas híbridos aos seus dados de performance via Strava, com insights gerados por IA.
 
 Este repositório contém a API backend em NestJS, responsável por autenticação, armazenamento e processamento de dados.
@@ -132,6 +134,19 @@ http://localhost:3001/api-doc
 | `OPENAI_API_KEY` | Chave da API OpenAI |
 | `FRONTEND_URL` | URL do frontend para CORS e redirects |
 | `SESSION_SECRET` | Segredo para assinar cookies de sessão |
+
+---
+
+## CI/CD
+
+- Pipeline do GitHub Actions em `.github/workflows/backend-ci.yml`.
+- Roda em `push`/`pull_request` para `main` e `develop` (e manualmente) com Node 20:
+  - `npm ci`;
+  - lint incremental dos arquivos `src/**/*.ts` e `test/**/*.ts` alterados;
+  - `npm run build`;
+  - `npx jest --runInBand` ignorando as 4 suítes de DI conhecidas (`auth.service.spec`, `auth.controller.spec`, `users.service.spec`, `insights.service.spec`).
+- O job roda em runner efêmero, sem dev server e sem os containers locais de desenvolvimento.
+- O deploy automático ainda não está configurado; depende da definição do alvo de hospedagem e de migrations.
 
 ---
 
