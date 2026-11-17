@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
@@ -6,6 +6,7 @@ import { AiService } from 'src/ai/ai.service';
 import { TrainingPlan } from './entities/training-plan.entity';
 import { TrainingSession } from './entities/training-session.entity';
 import { VolumeAdjustmentService } from './volume-adjustment.service';
+import { clearSessionMatchState } from './training-session-state';
 import {
   ActivityFeatures,
   ActivityShape,
@@ -48,6 +49,9 @@ const SHAPE_COMPAT: Record<string, Record<ActivityShape, number>> = {
 };
 
 const MISMATCH_CAP = 0.35;
+
+const REST_SESSION_MESSAGE =
+  'Sessão de descanso não recebe atividade. Escolha um treino da semana para vincular a corrida. Nada foi alterado.';
 
 @Injectable()
 export class ActivityMatcherService {
@@ -283,6 +287,13 @@ export class ActivityMatcherService {
     });
     if (!activity) return null;
 
+    if (session.type === 'rest') {
+      throw new BadRequestException({
+        code: 'REST_SESSION',
+        message: REST_SESSION_MESSAGE,
+      });
+    }
+
     await this.unlinkSessionsForActivity(activity.id);
     await this.linkSession(activity, session, 'manual', null);
 
@@ -295,6 +306,10 @@ export class ActivityMatcherService {
     method: 'auto' | 'ai' | 'manual',
     score: number | null,
   ): Promise<void> {
+    // O pareamento automático já ignora descanso; esta guarda impede que
+    // qualquer caminho futuro grave vínculo em descanso.
+    if (session.type === 'rest') return;
+
     const distanceKm = activity.distance / 1000;
     session.activityId = activity.id;
     session.actualDistance = activity.distance;
@@ -319,14 +334,7 @@ export class ActivityMatcherService {
   }
 
   private clearSessionMatch(session: TrainingSession): void {
-    session.activityId = null;
-    session.actualDistance = null;
-    session.actualPace = null;
-    session.actualMovingTime = null;
-    session.matchScore = null;
-    session.matchMethod = null;
-    session.matchedAt = null;
-    session.completed = false;
+    clearSessionMatchState(session);
   }
 
   private async loadWeekPlans(

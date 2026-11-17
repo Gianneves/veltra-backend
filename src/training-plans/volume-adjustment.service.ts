@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TrainingPlan } from './entities/training-plan.entity';
 import { TrainingSession } from './entities/training-session.entity';
+import { sumPlannedVolumeMeters } from './training-session-state';
 
 const TRIGGER_MIN_OVERSHOOT_KM = 1;
 const TRIGGER_OVERSHOOT_RATIO = 0.15;
@@ -60,7 +61,7 @@ export class VolumeAdjustmentService {
     const baselineM =
       plan.plannedWeeklyKm && plan.plannedWeeklyKm > 0
         ? plan.plannedWeeklyKm
-        : this.sumDistance(sessions.filter((item) => item.type !== 'rest'));
+        : sumPlannedVolumeMeters(sessions);
 
     if (baselineM <= 0) return;
 
@@ -187,10 +188,6 @@ export class VolumeAdjustmentService {
       default:
         return MIN_EASY_M;
     }
-  }
-
-  private sumDistance(sessions: TrainingSession[]): number {
-    return sessions.reduce((sum, item) => sum + (item.plannedDistance ?? 0), 0);
   }
 
   private sessionDate(plan: TrainingPlan, session: TrainingSession): Date {

@@ -1,10 +1,17 @@
 import { Injectable } from '@nestjs/common';
-import { ChatOpenAI, OpenAIEmbeddings } from '@langchain/openai';
+import { OpenAIEmbeddings } from '@langchain/openai';
 import {
   AIMessage,
   HumanMessage,
   SystemMessage,
+  type BaseMessage,
 } from '@langchain/core/messages';
+import {
+  AiModelRouter,
+  type AiTask,
+  type ModelDecision,
+  type RoutingSignals,
+} from './model-router';
 
 export interface PlanTip {
   day?: string;
@@ -208,6 +215,8 @@ export function parseActivityInsight(
 
 @Injectable()
 export class AiService {
+  constructor(private readonly modelRouter: AiModelRouter) {}
+
   createEmbedding(text: string) {
     const cleanSpaces = text.replace(/\s+/g, ' ').trim();
 
@@ -222,21 +231,15 @@ export class AiService {
   }
 
   async generateInsight(data: string) {
-    const llm = new ChatOpenAI({
-      model: 'gpt-4o-mini',
-      temperature: 0,
-    });
-
     const systemMsg = new SystemMessage(
       "You're an experienced running coach, so you need to analyze user data and provide your feedback on it.",
     );
     const humanMsg = new HumanMessage(data);
 
     const messages = [systemMsg, humanMsg];
+    const { text } = await this.invokeRouted('generic', 0, messages);
 
-    const insight = await llm.invoke(messages);
-
-    return insight.content as string;
+    return text;
   }
 
   async generateCoachReplyStream(
@@ -247,12 +250,16 @@ export class AiService {
   ): Promise<CoachReplyResult | null> {
     if (!process.env.OPENAI_API_KEY) return null;
 
-    const llm = new ChatOpenAI({
-      model: 'gpt-4o-mini',
-      temperature: 0.3,
-    });
+    const signals: RoutingSignals = {
+      task: 'coach_reply',
+      text: userMessage,
+      contextLength: systemPrompt.length,
+      historyLength: history.length,
+      wantsPlanChange: this.modelRouter.hasPlanChangeIntent(userMessage),
+      hasHealthSignal: this.modelRouter.hasHealthSignal(userMessage),
+    };
 
-    const messages = [
+    const messages: BaseMessage[] = [
       new SystemMessage(systemPrompt),
       ...history.map((message) =>
         message.role === 'user'
@@ -262,6 +269,58 @@ export class AiService {
       new HumanMessage(userMessage),
     ];
 
+    const { runnable, decision } = this.modelRouter.buildRoutedRunnable(
+      signals,
+      0.3,
+    );
+
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      COACH_REPLY_TIMEOUT_MS,
+    );
+
+    let full = '';
+    let usage: unknown;
+
+    try {
+      const stream = await runnable.stream(
+        { signals, messages },
+        { signal: controller.signal },
+      );
+
+      for await (const chunk of stream) {
+        const token = typeof chunk.content === 'string' ? chunk.content : '';
+        if (chunk.usage_metadata) usage = chunk.usage_metadata;
+        if (!token) continue;
+        full += token;
+        onToken(token);
+      }
+
+      this.logUsage('coach_reply', decision, usage);
+      return splitCoachReply(full);
+    } catch (err) {
+      console.error('Erro ao gerar resposta do coach:', (err as Error).message);
+
+      if (
+        !full.trim() &&
+        decision.tier === 'cheap' &&
+        this.modelRouter.escalationEnabled()
+      ) {
+        const retry = await this.streamPremiumFallback(messages, onToken);
+        if (retry !== null) return retry;
+      }
+
+      return full.trim() ? splitCoachReply(full) : null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async streamPremiumFallback(
+    messages: BaseMessage[],
+    onToken: (token: string) => void,
+  ): Promise<CoachReplyResult | null> {
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(),
@@ -271,6 +330,7 @@ export class AiService {
     let full = '';
 
     try {
+      const llm = this.modelRouter.createModel('premium', 'coach_reply', 0.3);
       const stream = await llm.stream(messages, {
         signal: controller.signal,
       });
@@ -282,9 +342,13 @@ export class AiService {
         onToken(token);
       }
 
+      console.info('[ai] task=coach_reply tier=premium reason=fallback');
       return splitCoachReply(full);
     } catch (err) {
-      console.error('Erro ao gerar resposta do coach:', (err as Error).message);
+      console.error(
+        'Erro ao gerar resposta do coach (fallback premium):',
+        (err as Error).message,
+      );
       return full.trim() ? splitCoachReply(full) : null;
     } finally {
       clearTimeout(timeout);
@@ -296,11 +360,6 @@ export class AiService {
   ): Promise<ActivityInsightContent | null> {
     if (!process.env.OPENAI_API_KEY) return null;
 
-    const llm = new ChatOpenAI({
-      model: 'gpt-4o-mini',
-      temperature: 0.3,
-    });
-
     const systemMsg = new SystemMessage(
       `Você é o Veltra Coach, treinador de corrida experiente. Analise a corrida realizada pelo atleta usando os dados fornecidos.
 Responda SOMENTE com JSON válido, sem markdown, no formato:
@@ -309,39 +368,25 @@ Regras: português do Brasil; "summary" com 2 frases resumindo a corrida; "perfo
     );
     const humanMsg = new HumanMessage(context);
 
-    try {
-      const response = await Promise.race([
-        llm.invoke([systemMsg, humanMsg]),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error('Timeout ao gerar insight da corrida')),
-            ACTIVITY_INSIGHT_TIMEOUT_MS,
-          ),
-        ),
-      ]);
+    const result = await this.invokeParsed(
+      'activity_insight',
+      0.3,
+      {
+        contextLength: context.length,
+        hasHealthSignal: this.modelRouter.hasHealthSignal(context),
+      },
+      [systemMsg, humanMsg],
+      parseActivityInsight,
+      ACTIVITY_INSIGHT_TIMEOUT_MS,
+      'Timeout ao gerar insight da corrida',
+      'Erro ao gerar insight da corrida com IA',
+    );
 
-      const text =
-        typeof response.content === 'string'
-          ? response.content
-          : JSON.stringify(response.content);
-
-      return parseActivityInsight(text);
-    } catch (err) {
-      console.error(
-        'Erro ao gerar insight da corrida com IA:',
-        (err as Error).message,
-      );
-      return null;
-    }
+    return result;
   }
 
   async generatePlanReview(context: string): Promise<PlanReview | null> {
     if (!process.env.OPENAI_API_KEY) return null;
-
-    const llm = new ChatOpenAI({
-      model: 'gpt-4o-mini',
-      temperature: 0.2,
-    });
 
     const systemMsg = new SystemMessage(
       `Você é o Veltra Coach, treinador de corrida experiente. Analise o plano gerado e os dados reais do atleta.
@@ -351,41 +396,25 @@ Regras: português do Brasil; "overview" com 2-3 frases resumindo a estratégia;
     );
     const humanMsg = new HumanMessage(context);
 
-    try {
-      const response = await Promise.race([
-        llm.invoke([systemMsg, humanMsg]),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error('Timeout ao gerar análise do plano')),
-            PLAN_REVIEW_TIMEOUT_MS,
-          ),
-        ),
-      ]);
-
-      const text =
-        typeof response.content === 'string'
-          ? response.content
-          : JSON.stringify(response.content);
-
-      return this.parsePlanReview(text);
-    } catch (err) {
-      console.error(
-        'Erro ao gerar análise do plano com IA:',
-        (err as Error).message,
-      );
-      return null;
-    }
+    return this.invokeParsed(
+      'plan_review',
+      0.2,
+      {
+        contextLength: context.length,
+        hasHealthSignal: this.modelRouter.hasHealthSignal(context),
+      },
+      [systemMsg, humanMsg],
+      (text) => this.parsePlanReview(text),
+      PLAN_REVIEW_TIMEOUT_MS,
+      'Timeout ao gerar análise do plano',
+      'Erro ao gerar análise do plano com IA',
+    );
   }
 
   async classifyActivityMatch(
     context: string,
   ): Promise<{ sessionId: string; reason?: string } | null> {
     if (!process.env.OPENAI_API_KEY) return null;
-
-    const llm = new ChatOpenAI({
-      model: 'gpt-4o-mini',
-      temperature: 0,
-    });
 
     const systemMsg = new SystemMessage(
       `Você é o Veltra Coach. Dada uma atividade realizada e candidatos de treino planejado, decida qual treino a atividade representa.
@@ -395,26 +424,26 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
     );
     const humanMsg = new HumanMessage(context);
 
+    return this.invokeParsed(
+      'activity_match',
+      0,
+      { contextLength: context.length },
+      [systemMsg, humanMsg],
+      (text) => this.parseActivityMatch(text),
+      ACTIVITY_MATCH_TIMEOUT_MS,
+      'Timeout ao classificar atividade',
+      'Erro ao classificar atividade com IA',
+    );
+  }
+
+  private parseActivityMatch(
+    text: string,
+  ): { sessionId: string; reason?: string } | null {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+
     try {
-      const response = await Promise.race([
-        llm.invoke([systemMsg, humanMsg]),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error('Timeout ao classificar atividade')),
-            ACTIVITY_MATCH_TIMEOUT_MS,
-          ),
-        ),
-      ]);
-
-      const text =
-        typeof response.content === 'string'
-          ? response.content
-          : JSON.stringify(response.content);
-
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}');
-      if (start < 0 || end <= start) return null;
-
       const parsed = JSON.parse(text.slice(start, end + 1)) as {
         sessionId?: unknown;
         reason?: unknown;
@@ -426,13 +455,118 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
         sessionId: parsed.sessionId,
         reason: typeof parsed.reason === 'string' ? parsed.reason : undefined,
       };
-    } catch (err) {
-      console.error(
-        'Erro ao classificar atividade com IA:',
-        (err as Error).message,
-      );
+    } catch {
       return null;
     }
+  }
+
+  private async invokeRouted(
+    task: AiTask,
+    temperature: number,
+    messages: BaseMessage[],
+  ): Promise<{ text: string; decision: ModelDecision }> {
+    const signals: RoutingSignals = { task };
+    const { runnable, decision } = this.modelRouter.buildRoutedRunnable(
+      signals,
+      temperature,
+    );
+
+    const response = await runnable.invoke({ signals, messages });
+    this.logUsage(task, decision, response.usage_metadata);
+
+    return { text: this.messageText(response), decision };
+  }
+
+  private async invokeParsed<T>(
+    task: AiTask,
+    temperature: number,
+    signals: Omit<RoutingSignals, 'task'>,
+    messages: BaseMessage[],
+    parse: (text: string) => T | null,
+    timeoutMs: number,
+    timeoutMessage: string,
+    errorMessage: string,
+  ): Promise<T | null> {
+    const routingSignals: RoutingSignals = { task, ...signals };
+    const { runnable, decision } = this.modelRouter.buildRoutedRunnable(
+      routingSignals,
+      temperature,
+    );
+
+    try {
+      const response = await this.withTimeout(
+        runnable.invoke({ signals: routingSignals, messages }),
+        timeoutMs,
+        timeoutMessage,
+      );
+
+      this.logUsage(task, decision, response.usage_metadata);
+      const parsed = parse(this.messageText(response));
+      if (parsed !== null) return parsed;
+
+      if (decision.tier !== 'cheap' || !this.modelRouter.escalationEnabled()) {
+        return null;
+      }
+
+      console.info(`[ai] task=${task} tier=premium reason=parse_escalation`);
+      const premium = this.modelRouter.createModel(
+        'premium',
+        task,
+        temperature,
+      );
+      const retry = await this.withTimeout(
+        premium.invoke(messages),
+        timeoutMs,
+        timeoutMessage,
+      );
+
+      this.logUsage(
+        task,
+        {
+          tier: 'premium',
+          model: this.modelRouter.modelName('premium'),
+          reason: 'parse_escalation',
+        },
+        retry.usage_metadata,
+      );
+
+      return parse(this.messageText(retry));
+    } catch (err) {
+      console.error(`${errorMessage}:`, (err as Error).message);
+      return null;
+    }
+  }
+
+  private withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    message: string,
+  ): Promise<T> {
+    if (timeoutMs <= 0) return promise;
+
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(message)), timeoutMs),
+      ),
+    ]);
+  }
+
+  private messageText(response: { content: unknown }): string {
+    return typeof response.content === 'string'
+      ? response.content
+      : JSON.stringify(response.content);
+  }
+
+  private logUsage(
+    task: AiTask,
+    decision: ModelDecision,
+    usage: unknown,
+  ): void {
+    if (!usage) return;
+    console.info(
+      `[ai] task=${task} tier=${decision.tier} model=${decision.model} usage=${JSON.stringify(usage)}`,
+    );
   }
 
   private parsePlanReview(text: string): PlanReview | null {

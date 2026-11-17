@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Activity } from 'src/activities/entities/activity.entity';
 import { ActivityMatcherService } from './activity-matcher.service';
 import type { TrainingPlan } from './entities/training-plan.entity';
@@ -49,10 +50,12 @@ function createService(options?: {
   plans?: TrainingPlan[];
   sessions?: TrainingSession[];
   aiPick?: { sessionId: string; reason?: string } | null;
+  linkPlan?: TrainingPlan | null;
+  activity?: Activity | null;
 }) {
   const planRepository = {
     find: jest.fn(() => Promise.resolve(options?.plans ?? [])),
-    findOne: jest.fn(() => Promise.resolve(null)),
+    findOne: jest.fn(() => Promise.resolve(options?.linkPlan ?? null)),
   };
   const sessionRepository = {
     find: jest.fn(() => Promise.resolve(options?.sessions ?? [])),
@@ -60,7 +63,7 @@ function createService(options?: {
     count: jest.fn(() => Promise.resolve(0)),
   };
   const activityRepository = {
-    findOne: jest.fn(() => Promise.resolve(null)),
+    findOne: jest.fn(() => Promise.resolve(options?.activity ?? null)),
   };
   const aiService = {
     classifyActivityMatch: jest.fn(() =>
@@ -83,6 +86,7 @@ function createService(options?: {
     service,
     planRepository,
     sessionRepository,
+    activityRepository,
     aiService,
     volumeAdjustment,
   };
@@ -498,6 +502,77 @@ describe('ActivityMatcherService', () => {
 
       const result = await service.matchActivity('user-1', activity);
       expect(result.matched).toBe(false);
+    });
+  });
+
+  describe('linkActivityToSession', () => {
+    it('recusa vínculo manual com sessão de descanso', async () => {
+      const rest = makeSession({
+        type: 'rest',
+        plannedDistance: 0,
+        plannedPace: 0,
+        completed: true,
+        activityId: 'activity-old',
+        actualDistance: 9000,
+        actualPace: 380,
+        actualMovingTime: 3420,
+        matchMethod: 'auto',
+        matchScore: 0.9,
+        matchedAt: new Date(),
+      });
+      const plan = {
+        id: 'plan-1',
+        userId: 'user-1',
+        weekStart: new Date(2026, 8, 14).toISOString(),
+        sessions: [rest],
+      } as TrainingPlan;
+
+      const { service, sessionRepository } = createService({
+        linkPlan: plan,
+        activity: makeActivity(),
+      });
+
+      const promise = service.linkActivityToSession(
+        'user-1',
+        'plan-1',
+        'session-1',
+        'activity-1',
+      );
+
+      await expect(promise).rejects.toBeInstanceOf(BadRequestException);
+      await expect(promise).rejects.toMatchObject({
+        response: { code: 'REST_SESSION' },
+      });
+      await expect(promise).rejects.toMatchObject({ status: 400 });
+      expect(rest.activityId).toBe('activity-old');
+      expect(rest.completed).toBe(true);
+      expect(rest.actualDistance).toBe(9000);
+      expect(sessionRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('devolve vazio quando a atividade não existe, mesmo em descanso', async () => {
+      const rest = makeSession({ type: 'rest', plannedDistance: 0 });
+      const plan = {
+        id: 'plan-1',
+        userId: 'user-1',
+        weekStart: new Date(2026, 8, 14).toISOString(),
+        sessions: [rest],
+      } as TrainingPlan;
+
+      const { service, sessionRepository } = createService({
+        linkPlan: plan,
+        activity: null,
+      });
+
+      const result = await service.linkActivityToSession(
+        'user-1',
+        'plan-1',
+        'session-1',
+        'activity-1',
+      );
+
+      expect(result).toBeNull();
+      expect(sessionRepository.save).not.toHaveBeenCalled();
     });
   });
 
