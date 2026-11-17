@@ -953,6 +953,14 @@ describe('updateSessionsBatch', () => {
     plannedDistance: number;
     plannedPace: number;
     planId?: string;
+    completed?: boolean;
+    activityId?: string | null;
+    actualDistance?: number | null;
+    actualPace?: number | null;
+    actualMovingTime?: number | null;
+    matchScore?: number | null;
+    matchMethod?: string | null;
+    matchedAt?: Date | null;
   }
 
   function batchMocks(initial: BatchRow[]) {
@@ -980,7 +988,10 @@ describe('updateSessionsBatch', () => {
               : ([...store.values()].find((s) => s.day === where?.day) ?? null),
           ),
       ),
-      save: jest.fn((s: BatchRow): Promise<BatchRow> => Promise.resolve(s)),
+      save: jest.fn((s: BatchRow): Promise<BatchRow> => {
+        store.set(s.id, { ...s });
+        return Promise.resolve({ ...s });
+      }),
     };
     const athleteProfileService = {
       getAge: jest.fn(
@@ -1082,25 +1093,94 @@ describe('updateSessionsBatch', () => {
     expect(store.get('a')?.day).toBe('Ter');
   });
 
-  it('converte treino em descanso zerando distância e pace', async () => {
-    const { service, store } = batchMocks([
-      {
-        id: 'a',
-        day: 'Ter',
-        dayOrder: 1,
-        type: 'easy',
-        plannedDistance: 8000,
-        plannedPace: 360,
-      },
-    ]);
+  function completedRow(): BatchRow {
+    return {
+      id: 'a',
+      day: 'Ter',
+      dayOrder: 1,
+      type: 'easy',
+      plannedDistance: 8000,
+      plannedPace: 360,
+      completed: true,
+      activityId: 'activity-9',
+      actualDistance: 8100,
+      actualPace: 358,
+      actualMovingTime: 2900,
+      matchScore: 0.93,
+      matchMethod: 'auto',
+      matchedAt: new Date('2026-09-15T10:00:00.000Z'),
+    };
+  }
+
+  it('converte sessão concluída em descanso limpando conclusão, vínculo e realizados', async () => {
+    const { service, store } = batchMocks([completedRow()]);
+
+    await service.updateSession('plan-1', 'a', 'user-1', { type: 'rest' });
+
+    const saved = store.get('a');
+    expect(saved?.type).toBe('rest');
+    expect(saved?.completed).toBe(false);
+    expect(saved?.activityId).toBeNull();
+    expect(saved?.actualDistance).toBeNull();
+    expect(saved?.actualPace).toBeNull();
+    expect(saved?.actualMovingTime).toBeNull();
+    expect(saved?.matchScore).toBeNull();
+    expect(saved?.matchMethod).toBeNull();
+    expect(saved?.matchedAt).toBeNull();
+    expect(saved?.plannedDistance).toBe(0);
+    expect(saved?.plannedPace).toBe(0);
+  });
+
+  it('lote converte sessão concluída em descanso limpando conclusão e realizados', async () => {
+    const { service, store } = batchMocks([completedRow()]);
 
     await service.updateSessionsBatch('plan-1', 'user-1', [
       { sessionId: 'a', type: 'rest' },
     ]);
 
-    expect(store.get('a')?.type).toBe('rest');
-    expect(store.get('a')?.plannedDistance).toBe(0);
-    expect(store.get('a')?.plannedPace).toBe(0);
+    const saved = store.get('a');
+    expect(saved?.type).toBe('rest');
+    expect(saved?.completed).toBe(false);
+    expect(saved?.activityId).toBeNull();
+    expect(saved?.actualDistance).toBeNull();
+    expect(saved?.actualPace).toBeNull();
+    expect(saved?.actualMovingTime).toBeNull();
+    expect(saved?.matchScore).toBeNull();
+    expect(saved?.matchMethod).toBeNull();
+    expect(saved?.matchedAt).toBeNull();
+    expect(saved?.plannedDistance).toBe(0);
+    expect(saved?.plannedPace).toBe(0);
+  });
+
+  it('converter descanso em treino devolve a sessão planejada, sem conclusão', async () => {
+    const { service, store } = batchMocks([
+      {
+        id: 'a',
+        day: 'Qua',
+        dayOrder: 2,
+        type: 'rest',
+        plannedDistance: 0,
+        plannedPace: 0,
+        completed: false,
+        activityId: null,
+        actualDistance: null,
+        actualPace: null,
+      },
+    ]);
+
+    await service.updateSession('plan-1', 'a', 'user-1', {
+      type: 'easy',
+      plannedDistance: 5000,
+      plannedPace: 360,
+    });
+
+    const saved = store.get('a');
+    expect(saved?.type).toBe('easy');
+    expect(saved?.plannedDistance).toBe(5000);
+    expect(saved?.plannedPace).toBe(360);
+    expect(saved?.completed).toBe(false);
+    expect(saved?.actualDistance).toBeNull();
+    expect(saved?.activityId).toBeNull();
   });
 
   it('rejeita dia duplicado no PUT individual', async () => {
@@ -1131,5 +1211,124 @@ describe('updateSessionsBatch', () => {
     await expect(promise).rejects.toMatchObject({
       response: { code: 'DAY_COLLISION' },
     });
+  });
+});
+
+describe('leitura de plano', () => {
+  const weekStart = (() => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+    return start;
+  })();
+
+  function readMocks() {
+    const legacyRest = {
+      id: 'rest-1',
+      planId: 'plan-1',
+      day: 'Qua',
+      dayOrder: 2,
+      type: 'rest',
+      plannedDistance: 0,
+      plannedPace: 0,
+      completed: true,
+      activityId: 'activity-9',
+      actualDistance: 9000,
+      actualPace: 380,
+      actualMovingTime: 3420,
+      matchScore: 0.91,
+      matchMethod: 'auto',
+      matchedAt: new Date('2026-09-16T10:00:00.000Z'),
+    } as TrainingSession;
+    const sessions = [
+      legacyRest,
+      {
+        id: 'easy-1',
+        planId: 'plan-1',
+        day: 'Ter',
+        dayOrder: 1,
+        type: 'easy',
+        plannedDistance: 8000,
+        plannedPace: 360,
+        completed: false,
+      },
+      {
+        id: 'tempo-1',
+        planId: 'plan-1',
+        day: 'Qui',
+        dayOrder: 3,
+        type: 'tempo',
+        plannedDistance: 5000,
+        plannedPace: 340,
+        completed: false,
+      },
+    ] as TrainingSession[];
+    const plan = {
+      id: 'plan-1',
+      userId: 'user-1',
+      weekStart: weekStart.toISOString(),
+      plannedWeeklyKm: 999,
+      sessions,
+    } as TrainingPlan;
+    const planRepository = {
+      findOne: jest.fn(() => Promise.resolve(plan)),
+      find: jest.fn(() => Promise.resolve([plan])),
+    };
+    const sessionRepository = {
+      save: jest.fn((session: TrainingSession) => Promise.resolve(session)),
+    };
+    const service = new TrainingPlansService(
+      planRepository as any,
+      sessionRepository as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    return { service, sessionRepository };
+  }
+
+  function readByPath(
+    service: TrainingPlansService,
+    path: 'current' | 'list' | 'week',
+  ): Promise<TrainingPlan | null | undefined> {
+    if (path === 'current') return service.findCurrent('user-1');
+    if (path === 'list') {
+      return service.findAll('user-1').then((plans) => plans[0]);
+    }
+    return service.findByWeek('user-1', weekStart.toISOString());
+  }
+
+  it('normaliza descanso legado nos três caminhos de leitura', async () => {
+    for (const path of ['current', 'list', 'week'] as const) {
+      const { service, sessionRepository } = readMocks();
+
+      const plan = await readByPath(service, path);
+      const rest = plan?.sessions.find((session) => session.id === 'rest-1');
+
+      expect(rest?.completed).toBe(false);
+      expect(rest?.activityId).toBeNull();
+      expect(rest?.actualDistance).toBeNull();
+      expect(rest?.actualPace).toBeNull();
+      expect(rest?.actualMovingTime).toBeNull();
+      expect(rest?.matchScore).toBeNull();
+      expect(rest?.matchMethod).toBeNull();
+      expect(rest?.matchedAt).toBeNull();
+      expect(rest?.plannedDistance).toBe(0);
+      expect(rest?.plannedPace).toBe(0);
+      expect(sessionRepository.save).not.toHaveBeenCalled();
+    }
+  });
+
+  it('devolve plannedWeeklyKm como a soma das distâncias planejadas não-descanso, em metros', async () => {
+    for (const path of ['current', 'list', 'week'] as const) {
+      const { service } = readMocks();
+
+      const plan = await readByPath(service, path);
+
+      expect(plan?.plannedWeeklyKm).toBe(13000);
+    }
   });
 });

@@ -47,6 +47,11 @@ import {
   predictRacePace,
 } from './race-target';
 import { ActivityMatcherService } from './activity-matcher.service';
+import {
+  applyRestState,
+  normalizePlanReadState,
+  sumPlannedVolumeMeters,
+} from './training-session-state';
 
 export interface generateFromGoalResult {
   plans: TrainingPlan[];
@@ -146,23 +151,27 @@ export class TrainingPlansService {
       order: SESSIONS_ORDER,
     });
 
-    return plan;
+    return plan ? normalizePlanReadState(plan) : null;
   }
 
   async findAll(userId: string) {
-    return this.planRepository.find({
+    const plans = await this.planRepository.find({
       where: { userId },
       relations: ['sessions'],
       order: { weekStart: 'ASC', ...SESSIONS_ORDER },
     });
+
+    return plans.map((plan) => normalizePlanReadState(plan));
   }
 
   async findByWeek(userId: string, weekStart: string) {
-    return this.planRepository.findOne({
+    const plan = await this.planRepository.findOne({
       where: { userId, weekStart },
       relations: ['sessions'],
       order: SESSIONS_ORDER,
     });
+
+    return plan ? normalizePlanReadState(plan) : null;
   }
 
   async getPattern(userId: string) {
@@ -257,8 +266,7 @@ export class TrainingPlansService {
     Object.assign(session, sessionData);
 
     if (session.type === 'rest') {
-      session.plannedDistance = 0;
-      session.plannedPace = 0;
+      applyRestState(session);
     }
 
     return this.sessionRepository.save(session);
@@ -373,8 +381,7 @@ export class TrainingPlansService {
         }
         Object.assign(current, data);
         if (current.type === 'rest') {
-          current.plannedDistance = 0;
-          current.plannedPace = 0;
+          applyRestState(current);
         }
         updated.push(await repo.save(current));
       }
@@ -547,9 +554,7 @@ export class TrainingPlansService {
         weekIndex,
       });
 
-      const plannedWeeklyKm = sessions
-        .filter((session) => session.type !== 'rest')
-        .reduce((sum, session) => sum + (session.plannedDistance ?? 0), 0);
+      const plannedWeeklyKm = sumPlannedVolumeMeters(sessions);
 
       const plan = this.planRepository.create({
         userId: goal.userId,
