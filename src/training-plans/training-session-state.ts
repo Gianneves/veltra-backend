@@ -40,12 +40,12 @@ export function sumPlannedVolumeMeters(sessions: TrainingSession[]): number {
  * concluído e o total planejado é sempre o calculado. Não grava nada.
  */
 export function normalizePlanReadState(plan: TrainingPlan): TrainingPlan {
-  const sessions = plan.sessions ?? [];
+  if (!plan.sessions) return plan;
 
-  for (const session of sessions) {
+  for (const session of plan.sessions) {
     if (session.type === 'rest') applyRestState(session);
   }
 
-  plan.plannedWeeklyKm = sumPlannedVolumeMeters(sessions);
+  plan.plannedWeeklyKm = sumPlannedVolumeMeters(plan.sessions);
   return plan;
 }

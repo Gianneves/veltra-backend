@@ -1112,12 +1112,7 @@ describe('updateSessionsBatch', () => {
     };
   }
 
-  it('converte sessão concluída em descanso limpando conclusão, vínculo e realizados', async () => {
-    const { service, store } = batchMocks([completedRow()]);
-
-    await service.updateSession('plan-1', 'a', 'user-1', { type: 'rest' });
-
-    const saved = store.get('a');
+  function expectRestCleared(saved?: BatchRow): void {
     expect(saved?.type).toBe('rest');
     expect(saved?.completed).toBe(false);
     expect(saved?.activityId).toBeNull();
@@ -1129,6 +1124,14 @@ describe('updateSessionsBatch', () => {
     expect(saved?.matchedAt).toBeNull();
     expect(saved?.plannedDistance).toBe(0);
     expect(saved?.plannedPace).toBe(0);
+  }
+
+  it('converte sessão concluída em descanso limpando conclusão, vínculo e realizados', async () => {
+    const { service, store } = batchMocks([completedRow()]);
+
+    await service.updateSession('plan-1', 'a', 'user-1', { type: 'rest' });
+
+    expectRestCleared(store.get('a'));
   });
 
   it('lote converte sessão concluída em descanso limpando conclusão e realizados', async () => {
@@ -1138,18 +1141,7 @@ describe('updateSessionsBatch', () => {
       { sessionId: 'a', type: 'rest' },
     ]);
 
-    const saved = store.get('a');
-    expect(saved?.type).toBe('rest');
-    expect(saved?.completed).toBe(false);
-    expect(saved?.activityId).toBeNull();
-    expect(saved?.actualDistance).toBeNull();
-    expect(saved?.actualPace).toBeNull();
-    expect(saved?.actualMovingTime).toBeNull();
-    expect(saved?.matchScore).toBeNull();
-    expect(saved?.matchMethod).toBeNull();
-    expect(saved?.matchedAt).toBeNull();
-    expect(saved?.plannedDistance).toBe(0);
-    expect(saved?.plannedPace).toBe(0);
+    expectRestCleared(store.get('a'));
   });
 
   it('converter descanso em treino devolve a sessão planejada, sem conclusão', async () => {
@@ -1181,6 +1173,46 @@ describe('updateSessionsBatch', () => {
     expect(saved?.completed).toBe(false);
     expect(saved?.actualDistance).toBeNull();
     expect(saved?.activityId).toBeNull();
+  });
+
+  it('converter descanso legado em treino pelo lote não devolve conclusão', async () => {
+    const { service, store } = batchMocks([
+      {
+        id: 'a',
+        day: 'Qua',
+        dayOrder: 2,
+        type: 'rest',
+        plannedDistance: 0,
+        plannedPace: 0,
+        completed: true,
+        activityId: 'activity-9',
+        actualDistance: 9000,
+        actualPace: 380,
+        actualMovingTime: 3420,
+        matchScore: 0.91,
+        matchMethod: 'auto',
+        matchedAt: new Date('2026-09-16T10:00:00.000Z'),
+      },
+    ]);
+
+    await service.updateSessionsBatch('plan-1', 'user-1', [
+      {
+        sessionId: 'a',
+        type: 'easy',
+        plannedDistance: 5000,
+        plannedPace: 360,
+      },
+    ]);
+
+    const saved = store.get('a');
+    expect(saved?.type).toBe('easy');
+    expect(saved?.plannedDistance).toBe(5000);
+    expect(saved?.plannedPace).toBe(360);
+    expect(saved?.completed).toBe(false);
+    expect(saved?.activityId).toBeNull();
+    expect(saved?.actualDistance).toBeNull();
+    expect(saved?.matchScore).toBeNull();
+    expect(saved?.matchedAt).toBeNull();
   });
 
   it('rejeita dia duplicado no PUT individual', async () => {
@@ -1273,6 +1305,8 @@ describe('leitura de plano', () => {
     const planRepository = {
       findOne: jest.fn(() => Promise.resolve(plan)),
       find: jest.fn(() => Promise.resolve([plan])),
+      save: jest.fn((item: TrainingPlan) => Promise.resolve(item)),
+      update: jest.fn(() => Promise.resolve({ affected: 1 })),
     };
     const sessionRepository = {
       save: jest.fn((session: TrainingSession) => Promise.resolve(session)),
@@ -1287,7 +1321,7 @@ describe('leitura de plano', () => {
       {} as any,
       {} as any,
     );
-    return { service, sessionRepository };
+    return { service, planRepository, sessionRepository };
   }
 
   function readByPath(
@@ -1303,7 +1337,7 @@ describe('leitura de plano', () => {
 
   it('normaliza descanso legado nos três caminhos de leitura', async () => {
     for (const path of ['current', 'list', 'week'] as const) {
-      const { service, sessionRepository } = readMocks();
+      const { service, planRepository, sessionRepository } = readMocks();
 
       const plan = await readByPath(service, path);
       const rest = plan?.sessions.find((session) => session.id === 'rest-1');
@@ -1319,6 +1353,8 @@ describe('leitura de plano', () => {
       expect(rest?.plannedDistance).toBe(0);
       expect(rest?.plannedPace).toBe(0);
       expect(sessionRepository.save).not.toHaveBeenCalled();
+      expect(planRepository.save).not.toHaveBeenCalled();
+      expect(planRepository.update).not.toHaveBeenCalled();
     }
   });
 

@@ -527,7 +527,7 @@ describe('ActivityMatcherService', () => {
         sessions: [rest],
       } as TrainingPlan;
 
-      const { service, sessionRepository, activityRepository } = createService({
+      const { service, sessionRepository } = createService({
         linkPlan: plan,
         activity: makeActivity(),
       });
@@ -548,7 +548,31 @@ describe('ActivityMatcherService', () => {
       expect(rest.completed).toBe(true);
       expect(rest.actualDistance).toBe(9000);
       expect(sessionRepository.save).not.toHaveBeenCalled();
-      expect(activityRepository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('devolve vazio quando a atividade não existe, mesmo em descanso', async () => {
+      const rest = makeSession({ type: 'rest', plannedDistance: 0 });
+      const plan = {
+        id: 'plan-1',
+        userId: 'user-1',
+        weekStart: new Date(2026, 8, 14).toISOString(),
+        sessions: [rest],
+      } as TrainingPlan;
+
+      const { service, sessionRepository } = createService({
+        linkPlan: plan,
+        activity: null,
+      });
+
+      const result = await service.linkActivityToSession(
+        'user-1',
+        'plan-1',
+        'session-1',
+        'activity-1',
+      );
+
+      expect(result).toBeNull();
+      expect(sessionRepository.save).not.toHaveBeenCalled();
     });
   });
 

@@ -49,6 +49,7 @@ import {
 import { ActivityMatcherService } from './activity-matcher.service';
 import {
   applyRestState,
+  clearSessionMatchState,
   normalizePlanReadState,
   sumPlannedVolumeMeters,
 } from './training-session-state';
@@ -219,6 +220,7 @@ export class TrainingPlansService {
     if (!session) return null;
 
     const { acknowledgeAgePolicy, ...sessionData } = data;
+    const wasRest = session.type === 'rest';
 
     if (
       sessionData.plannedDistance !== undefined &&
@@ -267,6 +269,10 @@ export class TrainingPlansService {
 
     if (session.type === 'rest') {
       applyRestState(session);
+    } else if (wasRest) {
+      // Descanso legado pode ter vindo concluído do banco; virar treino não
+      // pode ressuscitar a conclusão que a leitura normalizou.
+      clearSessionMatchState(session);
     }
 
     return this.sessionRepository.save(session);
@@ -379,9 +385,12 @@ export class TrainingPlansService {
         if (data.day && DAY_ORDER[data.day] !== undefined) {
           current.dayOrder = DAY_ORDER[data.day];
         }
+        const wasRest = current.type === 'rest';
         Object.assign(current, data);
         if (current.type === 'rest') {
           applyRestState(current);
+        } else if (wasRest) {
+          clearSessionMatchState(current);
         }
         updated.push(await repo.save(current));
       }

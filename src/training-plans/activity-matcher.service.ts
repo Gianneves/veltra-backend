@@ -282,17 +282,17 @@ export class ActivityMatcherService {
       return this.sessionRepository.save(session);
     }
 
+    const activity = await this.activityRepository.findOne({
+      where: { id: activityId, user: { id: userId } },
+    });
+    if (!activity) return null;
+
     if (session.type === 'rest') {
       throw new BadRequestException({
         code: 'REST_SESSION',
         message: REST_SESSION_MESSAGE,
       });
     }
-
-    const activity = await this.activityRepository.findOne({
-      where: { id: activityId, user: { id: userId } },
-    });
-    if (!activity) return null;
 
     await this.unlinkSessionsForActivity(activity.id);
     await this.linkSession(activity, session, 'manual', null);
@@ -306,12 +306,9 @@ export class ActivityMatcherService {
     method: 'auto' | 'ai' | 'manual',
     score: number | null,
   ): Promise<void> {
-    if (session.type === 'rest') {
-      throw new BadRequestException({
-        code: 'REST_SESSION',
-        message: REST_SESSION_MESSAGE,
-      });
-    }
+    // O pareamento automático já ignora descanso; esta guarda impede que
+    // qualquer caminho futuro grave vínculo em descanso.
+    if (session.type === 'rest') return;
 
     const distanceKm = activity.distance / 1000;
     session.activityId = activity.id;
