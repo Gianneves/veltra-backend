@@ -148,11 +148,7 @@ export function assessWeekForAge(
 ): WeekAgeAssessment {
   const adjustment = planAgeAdjustment(age);
   if (!adjustment) {
-    return {
-      volumeExceeded: false,
-      qualityExceeded: false,
-      message: undefined,
-    };
+    return { volumeExceeded: false, qualityExceeded: false };
   }
 
   const { maxWeeklyKm, maxQualitySessions } = adjustment;

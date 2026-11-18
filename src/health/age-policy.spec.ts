@@ -103,8 +103,8 @@ describe('age-policy', () => {
       expect(assessWeekForAge(30000, 3, 30)).toMatchObject({
         volumeExceeded: false,
         qualityExceeded: false,
-        message: undefined,
       });
+      expect(assessWeekForAge(30000, 3, 30).message).toBeUndefined();
     });
   });
 

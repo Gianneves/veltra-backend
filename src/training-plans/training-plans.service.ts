@@ -290,25 +290,30 @@ export class TrainingPlansService {
         }
       }
 
-      const changes = new Map<string, Partial<TrainingSession>>();
+      const changedIds = new Set<string>();
+      const finalById = new Map(
+        sessions.map((session) => [session.id, session]),
+      );
       for (const item of items) {
         const { sessionId, acknowledgeAgePolicy: _omittedAck, ...data } = item;
         void _omittedAck;
-        changes.set(sessionId, data);
+        // Itens repetidos no mesmo lote se acumulam, como no PUT sequencial.
+        finalById.set(
+          sessionId,
+          this.applySessionChanges(finalById.get(sessionId)!, data),
+        );
+        changedIds.add(sessionId);
       }
 
-      const finalSessions = sessions.map((session) => {
-        const data = changes.get(session.id);
-        return data ? this.applySessionChanges(session, data) : session;
-      });
+      const finalSessions = sessions.map(
+        (session) => finalById.get(session.id)!,
+      );
 
       for (const item of items) {
         if (item.plannedDistance === undefined || item.plannedDistance <= 0) {
           continue;
         }
-        const finalSession = finalSessions.find(
-          (session) => session.id === item.sessionId,
-        )!;
+        const finalSession = finalById.get(item.sessionId)!;
         this.assertDistanceForAge(finalSession, item.acknowledgeAgePolicy, age);
       }
 
@@ -328,7 +333,7 @@ export class TrainingPlansService {
       this.assertWeekAgeLimits(finalSessions, age);
 
       const changed = finalSessions.filter((session) =>
-        changes.has(session.id),
+        changedIds.has(session.id),
       );
       const saved = await manager.getRepository(TrainingSession).save(changed);
       await this.savePlannedWeeklyKm(manager, plan, finalSessions);
@@ -360,6 +365,8 @@ export class TrainingPlansService {
     });
     if (!plan) return null;
 
+    // O plano já foi filtrado pelo usuário; a leitura das sessões por `planId`
+    // é segura porque só acontece depois de a trava confirmar o dono.
     const sessions = await manager
       .getRepository(TrainingSession)
       .find({ where: { planId } });
