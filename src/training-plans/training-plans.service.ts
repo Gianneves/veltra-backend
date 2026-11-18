@@ -380,7 +380,13 @@ export class TrainingPlansService {
     data: Partial<TrainingSession>,
   ): TrainingSession {
     const wasRest = session.type === 'rest';
-    const next = { ...session, ...data } as TrainingSession;
+    // O ValidationPipe com `whitelist` devolve os campos opcionais ausentes do
+    // DTO como `undefined`; um PUT parcial não pode apagar dia, tipo ou
+    // distância no estado final só porque o campo não foi enviado.
+    const changes = Object.fromEntries(
+      Object.entries(data).filter(([, value]) => value !== undefined),
+    ) as Partial<TrainingSession>;
+    const next = { ...session, ...changes } as TrainingSession;
 
     if (data.day && DAY_ORDER[data.day] !== undefined) {
       next.dayOrder = DAY_ORDER[data.day];
