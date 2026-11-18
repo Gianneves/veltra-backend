@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, Repository } from 'typeorm';
+import { And, In, LessThan, MoreThanOrEqual, Repository } from 'typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
+import { RUN_SPORTS } from 'src/activities/run-sports';
 
 @Injectable()
 export class AnalyticsService {
@@ -22,7 +23,8 @@ export class AnalyticsService {
     const activities = await this.activityRepository.find({
       where: {
         user: { id: userId },
-        start_date: Between(weekStart, weekEnd),
+        sport_type: In(RUN_SPORTS),
+        start_date: And(MoreThanOrEqual(weekStart), LessThan(weekEnd)),
       },
     });
 
