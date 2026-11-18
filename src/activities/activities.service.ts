@@ -183,9 +183,15 @@ Max Watts: ${format(activity.max_watts, ' W')}
     });
   }
 
-  async upsert(createActivityDto: CreateActivityDto, user: User) {
-    const existing = await this.activityRepository.findOneBy({
-      activityStravaId: createActivityDto.activityStravaId,
+  async upsert(
+    createActivityDto: CreateActivityDto,
+    user: User,
+  ): Promise<Activity | null> {
+    const existing = await this.activityRepository.findOne({
+      where: {
+        activityStravaId: createActivityDto.activityStravaId,
+        user: { id: user.id },
+      },
     });
 
     if (existing) {
@@ -220,11 +226,21 @@ Max Watts: ${format(activity.max_watts, ' W')}
       return this.activityRepository.save(existing);
     }
 
+    // A coluna activityStravaId é única: se o ID já pertence a outro atleta,
+    // não atualiza o registro alheio nem tenta criar outro (estouraria a
+    // restrição). Quem chama interrompe o fluxo daquela atividade.
+    const otherOwner = await this.activityRepository.findOneBy({
+      activityStravaId: createActivityDto.activityStravaId,
+    });
+    if (otherOwner) return null;
+
     return this.create(createActivityDto, user, false);
   }
 
-  async findByStravaId(activityStravaId: number) {
-    return this.activityRepository.findOneBy({ activityStravaId });
+  async findByStravaId(activityStravaId: number, userId: string) {
+    return this.activityRepository.findOne({
+      where: { activityStravaId, user: { id: userId } },
+    });
   }
 
   async remove(activity: Activity) {

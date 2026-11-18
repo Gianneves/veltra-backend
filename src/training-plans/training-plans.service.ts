@@ -15,6 +15,7 @@ import {
 import { TrainingPlan } from './entities/training-plan.entity';
 import { TrainingSession } from './entities/training-session.entity';
 import { Activity } from 'src/activities/entities/activity.entity';
+import { RUN_SPORTS } from 'src/activities/run-sports';
 import { Goal } from 'src/goals/entities/goal.entity';
 import { AiService } from 'src/ai/ai.service';
 import {
@@ -691,7 +692,7 @@ export class TrainingPlansService {
       .then(async (activities) => {
         for (const activity of activities) {
           const sport = activity.sport_type ?? activity.type;
-          if (!['Run', 'TrailRun', 'VirtualRun'].includes(sport)) continue;
+          if (!RUN_SPORTS.includes(sport ?? '')) continue;
 
           try {
             const linked = await this.sessionRepository.count({

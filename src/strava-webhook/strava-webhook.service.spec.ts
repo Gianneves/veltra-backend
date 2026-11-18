@@ -17,7 +17,7 @@ const RUN_DETAIL = {
 function createService(options?: {
   user?: User | null;
   detail?: unknown;
-  existing?: { id: string } | null;
+  existing?: { id: string; userId?: string } | null;
   manuallyLinked?: boolean;
 }) {
   const stravaService = {
@@ -32,7 +32,14 @@ function createService(options?: {
     clearStravaTokens: jest.fn(() => Promise.resolve()),
   };
   const activitiesService = {
-    findByStravaId: jest.fn(() => Promise.resolve(options?.existing ?? null)),
+    findByStravaId: jest.fn((_stravaId: number, userId?: string) => {
+      const existing = options?.existing;
+      if (!existing) return Promise.resolve(null);
+      if (existing.userId && existing.userId !== userId) {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(existing);
+    }),
     upsert: jest.fn((dto: unknown) =>
       Promise.resolve({ ...(dto as object), id: 'activity-1' }),
     ),
@@ -176,10 +183,42 @@ describe('StravaWebhookService', () => {
 
     await service.handleEvent(activityEvent({ aspect_type: 'delete' }));
 
+    expect(activitiesService.findByStravaId).toHaveBeenCalledWith(
+      999,
+      'user-1',
+    );
     expect(matcher.unlinkSessionsForActivity).toHaveBeenCalledWith(
       'activity-1',
+      'user-1',
     );
     expect(activitiesService.remove).toHaveBeenCalled();
+  });
+
+  it('não apaga atividade nem desvincula sessão quando o dono do evento é outro atleta', async () => {
+    const { service, activitiesService, matcher } = createService({
+      existing: { id: 'activity-1', userId: 'user-2' },
+    });
+
+    await service.handleEvent(activityEvent({ aspect_type: 'delete' }));
+
+    expect(activitiesService.findByStravaId).toHaveBeenCalledWith(
+      999,
+      'user-1',
+    );
+    expect(matcher.unlinkSessionsForActivity).not.toHaveBeenCalled();
+    expect(activitiesService.remove).not.toHaveBeenCalled();
+  });
+
+  it('interrompe o fluxo quando o upsert não devolve atividade do dono', async () => {
+    const { service, activitiesService, matcher, insightsService } =
+      createService();
+    activitiesService.upsert.mockResolvedValue(null);
+
+    await service.handleEvent(activityEvent());
+
+    expect(activitiesService.upsert).toHaveBeenCalled();
+    expect(matcher.matchActivity).not.toHaveBeenCalled();
+    expect(insightsService.generateIfMissing).not.toHaveBeenCalled();
   });
 
   it('remove atividade que deixou de ser corrida', async () => {
@@ -192,6 +231,7 @@ describe('StravaWebhookService', () => {
 
     expect(matcher.unlinkSessionsForActivity).toHaveBeenCalledWith(
       'activity-1',
+      'user-1',
     );
     expect(activitiesService.remove).toHaveBeenCalled();
     expect(matcher.matchActivity).not.toHaveBeenCalled();

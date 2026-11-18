@@ -11,6 +11,7 @@ describe('ActivitiesService', () => {
     findAndCount: jest.Mock;
     findOne: jest.Mock;
     findOneBy: jest.Mock;
+    create: jest.Mock;
     save: jest.Mock;
   };
 
@@ -19,6 +20,7 @@ describe('ActivitiesService', () => {
       findAndCount: jest.fn().mockResolvedValue([[], 0]),
       findOne: jest.fn(),
       findOneBy: jest.fn(),
+      create: jest.fn((entity: unknown) => entity),
       save: jest.fn((entity: unknown) => Promise.resolve(entity)),
     };
 
@@ -95,20 +97,23 @@ describe('ActivitiesService', () => {
         max_watts: 250,
         laps: [{ distance: 1000, moving_time: 360, elapsed_time: 360 }],
       };
-      activityRepository.findOneBy.mockResolvedValue(existing);
+      activityRepository.findOne.mockResolvedValue(existing);
 
       const saved = await service.upsert(baseDto, { id: 'user-1' } as never);
 
+      expect(activityRepository.findOne).toHaveBeenCalledWith({
+        where: { activityStravaId: 123, user: { id: 'user-1' } },
+      });
       expect(activityRepository.save).toHaveBeenCalledWith(existing);
-      expect(saved.average_heartrate).toBe(150);
-      expect(saved.max_heartrate).toBe(172);
-      expect(saved.max_watts).toBe(250);
-      expect(saved.laps).toEqual(existing.laps);
+      expect(saved?.average_heartrate).toBe(150);
+      expect(saved?.max_heartrate).toBe(172);
+      expect(saved?.max_watts).toBe(250);
+      expect(saved?.laps).toEqual(existing.laps);
     });
 
     it('atualiza a FC quando o DTO traz valores', async () => {
       const existing = { activityStravaId: 123, average_heartrate: 150 };
-      activityRepository.findOneBy.mockResolvedValue(existing);
+      activityRepository.findOne.mockResolvedValue(existing);
 
       const saved = await service.upsert(
         {
@@ -119,8 +124,22 @@ describe('ActivitiesService', () => {
         { id: 'user-1' } as never,
       );
 
-      expect(saved.average_heartrate).toBe(160);
-      expect(saved.max_heartrate).toBe(178);
+      expect(saved?.average_heartrate).toBe(160);
+      expect(saved?.max_heartrate).toBe(178);
+    });
+
+    it('não atualiza atividade de outro atleta e devolve null', async () => {
+      activityRepository.findOne.mockResolvedValue(null);
+      activityRepository.findOneBy.mockResolvedValue({
+        activityStravaId: 123,
+        name: 'Do atleta B',
+      });
+
+      const saved = await service.upsert(baseDto, { id: 'user-1' } as never);
+
+      expect(saved).toBeNull();
+      expect(activityRepository.save).not.toHaveBeenCalled();
+      expect(activityRepository.create).not.toHaveBeenCalled();
     });
   });
 });
