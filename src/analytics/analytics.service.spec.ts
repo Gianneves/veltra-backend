@@ -7,9 +7,21 @@ import { RUN_SPORTS } from 'src/activities/run-sports';
 
 type DateWhere = {
   user: { id: string };
-  start_date: FindOperator<Date> | FindOperator<Date>[];
+  start_date: FindOperator<Date>;
   sport_type?: FindOperator<string[]>;
 };
+
+const WEDNESDAY = new Date(2026, 8, 16, 10, 0, 0);
+const WEEK_START = new Date(2026, 8, 14);
+const NEXT_WEEK_START = new Date(2026, 8, 21);
+
+const runActivity = (overrides: Partial<Activity> = {}): Partial<Activity> => ({
+  distance: 5000,
+  moving_time: 1800,
+  sport_type: 'Run',
+  start_date: new Date(2026, 8, 15),
+  ...overrides,
+});
 
 describe('AnalyticsService', () => {
   let service: AnalyticsService;
@@ -23,25 +35,21 @@ describe('AnalyticsService', () => {
     return calls[0][0].where as DateWhere;
   };
 
-  const windowOperators = (): [FindOperator<Date>, FindOperator<Date>] => {
+  const expectCurrentWeekWindow = () => {
     const where = findWhere();
-    const dates = (
-      Array.isArray(where.start_date) ? where.start_date : [where.start_date]
-    ).flatMap((operator) =>
-      operator.type === 'and'
-        ? (operator.value as FindOperator<Date>[])
-        : [operator],
+    const limits = where.start_date.value as FindOperator<Date>[];
+    const lower = limits.find(
+      (operator) => operator.type === 'moreThanOrEqual',
     );
-    const lower = dates.find((operator) => operator.type === 'moreThanOrEqual');
-    const upper = dates.find((operator) => operator.type === 'lessThan');
+    const upper = limits.find((operator) => operator.type === 'lessThan');
 
-    expect(lower).toBeDefined();
-    expect(upper).toBeDefined();
-
-    return [lower as FindOperator<Date>, upper as FindOperator<Date>];
+    expect(where.start_date.type).toBe('and');
+    expect(lower?.value.getTime()).toBe(WEEK_START.getTime());
+    expect(upper?.value.getTime()).toBe(NEXT_WEEK_START.getTime());
   };
 
   beforeEach(async () => {
+    jest.useFakeTimers().setSystemTime(WEDNESDAY);
     repository = { find: jest.fn().mockResolvedValue([]) };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -63,77 +71,50 @@ describe('AnalyticsService', () => {
   });
 
   it('monta a janela da semana atual entre segunda 00:00 e a segunda seguinte, no horário local', async () => {
-    jest.useFakeTimers().setSystemTime(new Date(2026, 8, 16, 10, 0, 0));
-
     const result = await service.getWeeklyStats('user-1');
 
-    const [lower, upper] = windowOperators();
-
-    expect(lower.value.getTime()).toBe(new Date(2026, 8, 14).getTime());
-    expect(upper.value.getTime()).toBe(new Date(2026, 8, 21).getTime());
-    expect(result.weekStart).toBe(new Date(2026, 8, 14).toISOString());
+    expectCurrentWeekWindow();
+    expect(result.weekStart).toBe(WEEK_START.toISOString());
   });
 
   it('usa intervalo semiaberto e conta a corrida da virada em uma única semana', async () => {
-    jest.useFakeTimers().setSystemTime(new Date(2026, 8, 16, 10, 0, 0));
     repository.find.mockResolvedValue([
-      {
+      runActivity({
         distance: 10000,
         moving_time: 3600,
-        start_date: new Date(2026, 8, 14),
-      },
+        start_date: WEEK_START,
+      }),
     ]);
 
     const result = await service.getWeeklyStats('user-1');
 
-    const [lower, upper] = windowOperators();
-
-    expect(lower.type).toBe('moreThanOrEqual');
-    expect(lower.value.getTime()).toBe(new Date(2026, 8, 14).getTime());
-    expect(upper.type).toBe('lessThan');
-    expect(upper.value.getTime()).toBe(new Date(2026, 8, 21).getTime());
+    expectCurrentWeekWindow();
     expect(result.runCount).toBe(1);
     expect(result.totalDistance).toBe(10000);
     expect(result.totalTime).toBe(3600);
   });
 
   it('filtra apenas corridas e ignora atividade que não é corrida', async () => {
-    jest.useFakeTimers().setSystemTime(new Date(2026, 8, 16, 10, 0, 0));
-    repository.find.mockResolvedValue([
-      {
-        distance: 5000,
-        moving_time: 1800,
-        sport_type: 'Run',
-        start_date: new Date(2026, 8, 15),
-      },
-    ]);
+    repository.find.mockResolvedValue([runActivity()]);
 
     const result = await service.getWeeklyStats('user-1');
 
     const where = findWhere();
-    const sportFilter = where.sport_type;
 
-    expect(sportFilter).toBeDefined();
-    expect(sportFilter?.type).toBe('in');
-    expect(sportFilter?.value).toEqual(RUN_SPORTS);
+    expect(where.sport_type?.type).toBe('in');
+    expect(where.sport_type?.value).toEqual(RUN_SPORTS);
 
     expect(result).toEqual({
       totalDistance: 5000,
       totalTime: 1800,
       runCount: 1,
-      weekStart: new Date(2026, 8, 14).toISOString(),
+      weekStart: WEEK_START.toISOString(),
     });
   });
 
   it('filtra pelo usuário da sessão e não soma atividade de outro atleta', async () => {
-    jest.useFakeTimers().setSystemTime(new Date(2026, 8, 16, 10, 0, 0));
     repository.find.mockResolvedValue([
-      {
-        distance: 4200,
-        moving_time: 1500,
-        sport_type: 'Run',
-        start_date: new Date(2026, 8, 15),
-      },
+      runActivity({ distance: 4200, moving_time: 1500 }),
     ]);
 
     const result = await service.getWeeklyStats('user-1');
@@ -147,14 +128,8 @@ describe('AnalyticsService', () => {
   });
 
   it('devolve totalDistance, totalTime, runCount e weekStart no mesmo formato', async () => {
-    jest.useFakeTimers().setSystemTime(new Date(2026, 8, 16, 10, 0, 0));
     repository.find.mockResolvedValue([
-      {
-        distance: 7000,
-        moving_time: 2400,
-        sport_type: 'TrailRun',
-        start_date: new Date(2026, 8, 16),
-      },
+      runActivity({ sport_type: 'TrailRun', start_date: WEDNESDAY }),
     ]);
 
     const result = await service.getWeeklyStats('user-1');
@@ -168,7 +143,7 @@ describe('AnalyticsService', () => {
     expect(typeof result.totalDistance).toBe('number');
     expect(typeof result.totalTime).toBe('number');
     expect(typeof result.runCount).toBe('number');
-    expect(result.weekStart).toBe(new Date(2026, 8, 14).toISOString());
+    expect(result.weekStart).toBe(WEEK_START.toISOString());
     expect(Number.isNaN(Date.parse(result.weekStart))).toBe(false);
   });
 });
