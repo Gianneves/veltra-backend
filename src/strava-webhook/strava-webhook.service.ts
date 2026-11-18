@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ActivitiesService } from 'src/activities/activities.service';
 import { CreateActivityDto } from 'src/activities/dto/create-activity.dto';
+import { RUN_SPORTS } from 'src/activities/run-sports';
 import { InsightsService } from 'src/insights/insights.service';
 import { RedisService } from 'src/redis/redis.service';
 import { StravaService } from 'src/strava/strava.service';
@@ -16,8 +17,6 @@ const DEDUP_TTL_SECONDS = 3600;
 const MAX_ATTEMPTS = 3;
 const WORKER_INTERVAL_MS = 1500;
 const BATCH_SIZE = 10;
-
-const RUN_SPORTS = ['Run', 'TrailRun', 'VirtualRun'];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -127,7 +126,7 @@ export class StravaWebhookService implements OnModuleInit, OnModuleDestroy {
     if (!user) return;
 
     if (event.aspect_type === 'delete') {
-      await this.handleDelete(event.object_id);
+      await this.handleDelete(user.id, event.object_id);
       return;
     }
 
@@ -145,12 +144,17 @@ export class StravaWebhookService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleDelete(stravaActivityId: number): Promise<void> {
-    const activity =
-      await this.activitiesService.findByStravaId(stravaActivityId);
+  private async handleDelete(
+    userId: string,
+    stravaActivityId: number,
+  ): Promise<void> {
+    const activity = await this.activitiesService.findByStravaId(
+      stravaActivityId,
+      userId,
+    );
     if (!activity) return;
 
-    await this.matcher.unlinkSessionsForActivity(activity.id);
+    await this.matcher.unlinkSessionsForActivity(activity.id, userId);
     await this.activitiesService.remove(activity);
   }
 
@@ -171,12 +175,13 @@ export class StravaWebhookService implements OnModuleInit, OnModuleDestroy {
 
     const existing = await this.activitiesService.findByStravaId(
       event.object_id,
+      user.id,
     );
     const isRun = RUN_SPORTS.includes(detail.sport_type ?? detail.type ?? '');
 
     if (!isRun) {
       if (existing) {
-        await this.matcher.unlinkSessionsForActivity(existing.id);
+        await this.matcher.unlinkSessionsForActivity(existing.id, user.id);
         await this.activitiesService.remove(existing);
       }
       return;
@@ -186,6 +191,9 @@ export class StravaWebhookService implements OnModuleInit, OnModuleDestroy {
       this.toActivityDto(detail),
       user,
     );
+    // Atividade com o mesmo activityStravaId pertence a outro atleta: nada a
+    // parear nem a anotar do lado de quem recebeu o evento.
+    if (!saved) return;
 
     if (existing && (await this.matcher.isManuallyLinked(saved.id))) {
       return;

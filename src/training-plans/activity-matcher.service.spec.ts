@@ -58,12 +58,45 @@ function createService(options?: {
     findOne: jest.fn(() => Promise.resolve(options?.linkPlan ?? null)),
   };
   const sessionRepository = {
-    find: jest.fn(() => Promise.resolve(options?.sessions ?? [])),
+    find: jest.fn(
+      (findOptions?: {
+        where?: { activityId?: string; plan?: { userId?: string } };
+      }) => {
+        const where = findOptions?.where;
+        const sessions = (options?.sessions ?? []).filter((session) => {
+          if (where?.activityId && session.activityId !== where.activityId) {
+            return false;
+          }
+          if (
+            where?.plan?.userId &&
+            session.plan?.userId !== where.plan.userId
+          ) {
+            return false;
+          }
+          return true;
+        });
+        return Promise.resolve(sessions);
+      },
+    ),
     save: jest.fn((session: TrainingSession) => Promise.resolve(session)),
     count: jest.fn(() => Promise.resolve(0)),
   };
   const activityRepository = {
-    findOne: jest.fn(() => Promise.resolve(options?.activity ?? null)),
+    findOne: jest.fn(
+      (findOptions?: { where?: { id?: string; user?: { id?: string } } }) => {
+        const activity = options?.activity;
+        if (!activity) return Promise.resolve(null);
+        const where = findOptions?.where;
+        if (where?.id && activity.id !== where.id) {
+          return Promise.resolve(null);
+        }
+        const ownerId = where?.user?.id;
+        if (ownerId && activity.user?.id !== ownerId) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve(activity);
+      },
+    ),
   };
   const aiService = {
     classifyActivityMatch: jest.fn(() =>
@@ -529,7 +562,7 @@ describe('ActivityMatcherService', () => {
 
       const { service, sessionRepository } = createService({
         linkPlan: plan,
-        activity: makeActivity(),
+        activity: makeActivity({ user: { id: 'user-1' } as never }),
       });
 
       const promise = service.linkActivityToSession(
@@ -574,6 +607,35 @@ describe('ActivityMatcherService', () => {
       expect(result).toBeNull();
       expect(sessionRepository.save).not.toHaveBeenCalled();
     });
+
+    it('não vincula atividade de outro atleta e nada muda', async () => {
+      const session = makeSession({ completed: false, activityId: null });
+      const plan = {
+        id: 'plan-1',
+        userId: 'user-1',
+        weekStart: new Date(2026, 8, 14).toISOString(),
+        sessions: [session],
+      } as TrainingPlan;
+
+      const { service, sessionRepository, activityRepository } = createService({
+        linkPlan: plan,
+        activity: makeActivity({ user: { id: 'user-2' } as never }),
+      });
+
+      const result = await service.linkActivityToSession(
+        'user-1',
+        'plan-1',
+        'session-1',
+        'activity-1',
+      );
+
+      expect(activityRepository.findOne).toHaveBeenCalledWith({
+        where: { id: 'activity-1', user: { id: 'user-1' } },
+      });
+      expect(result).toBeNull();
+      expect(session.activityId).toBeNull();
+      expect(sessionRepository.save).not.toHaveBeenCalled();
+    });
   });
 
   describe('unlinkSessionsForActivity', () => {
@@ -587,20 +649,61 @@ describe('ActivityMatcherService', () => {
         matchScore: 0.98,
         matchedAt: new Date(),
         completed: true,
+        plan: { userId: 'user-1' } as TrainingPlan,
       });
 
       const { service, sessionRepository } = createService({
         sessions: [linked],
       });
 
-      const count = await service.unlinkSessionsForActivity('activity-1');
+      const count = await service.unlinkSessionsForActivity(
+        'activity-1',
+        'user-1',
+      );
 
+      expect(sessionRepository.find).toHaveBeenCalledWith({
+        where: { activityId: 'activity-1', plan: { userId: 'user-1' } },
+      });
       expect(count).toBe(1);
       expect(linked.activityId).toBeNull();
       expect(linked.completed).toBe(false);
       expect(linked.actualDistance).toBeNull();
       expect(linked.matchMethod).toBeNull();
       expect(sessionRepository.save).toHaveBeenCalled();
+    });
+
+    it('desvincula apenas as sessões do plano do atleta', async () => {
+      const ownSession = makeSession({
+        id: 'session-1',
+        activityId: 'activity-1',
+        matchMethod: 'auto',
+        completed: true,
+        plan: { userId: 'user-1' } as TrainingPlan,
+      });
+      const otherSession = makeSession({
+        id: 'session-2',
+        planId: 'plan-2',
+        activityId: 'activity-1',
+        matchMethod: 'auto',
+        completed: true,
+        plan: { userId: 'user-2' } as TrainingPlan,
+      });
+
+      const { service, sessionRepository } = createService({
+        sessions: [ownSession, otherSession],
+      });
+
+      const count = await service.unlinkSessionsForActivity(
+        'activity-1',
+        'user-1',
+      );
+
+      expect(count).toBe(1);
+      expect(ownSession.activityId).toBeNull();
+      expect(ownSession.completed).toBe(false);
+      expect(otherSession.activityId).toBe('activity-1');
+      expect(otherSession.completed).toBe(true);
+      expect(sessionRepository.save).toHaveBeenCalledWith([ownSession]);
     });
   });
 });

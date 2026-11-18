@@ -66,6 +66,8 @@ export class StravaSyncController {
         this.webhookService.toActivityDto(detail),
         user,
       );
+      // Atividade do mesmo activityStravaId pertence a outro atleta.
+      if (!saved) continue;
 
       const result = await this.matcher.matchActivity(user.id, saved);
       void this.insightsService.generateIfMissing(saved, user.id);

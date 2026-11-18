@@ -149,7 +149,7 @@ export class ActivityMatcherService {
       return { matched: false, reason: 'vínculo manual' };
     }
 
-    await this.unlinkSessionsForActivity(activity.id);
+    await this.unlinkSessionsForActivity(activity.id, userId);
 
     const features = this.buildFeatures(activity);
     const plans = await this.loadWeekPlans(userId, features.localDate);
@@ -247,9 +247,12 @@ export class ActivityMatcherService {
     return count > 0;
   }
 
-  async unlinkSessionsForActivity(activityId: string): Promise<number> {
+  async unlinkSessionsForActivity(
+    activityId: string,
+    userId: string,
+  ): Promise<number> {
     const sessions = await this.sessionRepository.find({
-      where: { activityId },
+      where: { activityId, plan: { userId } },
     });
 
     if (sessions.length === 0) return 0;
@@ -294,7 +297,7 @@ export class ActivityMatcherService {
       });
     }
 
-    await this.unlinkSessionsForActivity(activity.id);
+    await this.unlinkSessionsForActivity(activity.id, userId);
     await this.linkSession(activity, session, 'manual', null);
 
     return session;

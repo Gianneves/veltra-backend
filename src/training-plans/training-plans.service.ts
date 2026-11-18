@@ -6,6 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   DataSource,
+  EntityManager,
   FindOptionsOrder,
   In,
   MoreThanOrEqual,
@@ -14,11 +15,13 @@ import {
 import { TrainingPlan } from './entities/training-plan.entity';
 import { TrainingSession } from './entities/training-session.entity';
 import { Activity } from 'src/activities/entities/activity.entity';
+import { RUN_SPORTS } from 'src/activities/run-sports';
 import { Goal } from 'src/goals/entities/goal.entity';
 import { AiService } from 'src/ai/ai.service';
 import {
   HEALTH_DISCLAIMER,
   assessDistanceForAge,
+  assessWeekForAge,
   planAgeAdjustment,
 } from 'src/health/age-policy';
 import {
@@ -50,6 +53,7 @@ import { ActivityMatcherService } from './activity-matcher.service';
 import {
   applyRestState,
   clearSessionMatchState,
+  countQualitySessions,
   normalizePlanReadState,
   sumPlannedVolumeMeters,
 } from './training-session-state';
@@ -209,73 +213,49 @@ export class TrainingPlansService {
     userId: string,
     data: Partial<TrainingSession> & { acknowledgeAgePolicy?: boolean },
   ) {
-    const plan = await this.planRepository.findOne({
-      where: { id: planId, userId },
-    });
-    if (!plan) return null;
+    const age = await this.athleteProfileService.getAge(userId);
 
-    const session = await this.sessionRepository.findOne({
-      where: { id: sessionId, planId },
-    });
-    if (!session) return null;
+    return this.dataSource.transaction(async (manager) => {
+      const locked = await this.withLockedPlan(manager, planId, userId);
+      if (!locked) return null;
 
-    const { acknowledgeAgePolicy, ...sessionData } = data;
-    const wasRest = session.type === 'rest';
+      const { plan, sessions } = locked;
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) return null;
 
-    if (
-      sessionData.plannedDistance !== undefined &&
-      sessionData.plannedDistance > 0
-    ) {
-      const age = await this.athleteProfileService.getAge(userId);
+      const { acknowledgeAgePolicy, ...sessionData } = data;
+      const finalSession = this.applySessionChanges(session, sessionData);
+      const finalSessions = sessions.map((item) =>
+        item.id === sessionId ? finalSession : item,
+      );
 
-      if (age !== undefined) {
-        const distanceKm = sessionData.plannedDistance / 1000;
-        const assessment = assessDistanceForAge(distanceKm, age);
-        const adjustment = planAgeAdjustment(age);
-        const exceedsAgeCap =
-          adjustment?.maxLongRunKm !== undefined &&
-          distanceKm > adjustment.maxLongRunKm;
-        const blocked = !assessment.allowed || exceedsAgeCap;
+      if (
+        sessionData.plannedDistance !== undefined &&
+        sessionData.plannedDistance > 0
+      ) {
+        this.assertDistanceForAge(finalSession, acknowledgeAgePolicy, age);
+      }
 
-        if (blocked && !acknowledgeAgePolicy) {
+      if (sessionData.day && DAY_ORDER[sessionData.day] !== undefined) {
+        const occupant = finalSessions.find(
+          (item) => item.id !== sessionId && item.day === sessionData.day,
+        );
+        if (occupant) {
           throw new BadRequestException({
-            code: 'AGE_POLICY',
-            message:
-              assessment.message ??
-              adjustment?.reason ??
-              'Distância acima do recomendado para a sua idade.',
-            recommendedMaxKm: adjustment?.maxLongRunKm ?? null,
-            recommendedMinAge: assessment.recommendedMinAge,
-            disclaimer: HEALTH_DISCLAIMER,
+            code: 'DAY_COLLISION',
+            message: `O dia ${sessionData.day} já tem sessão neste plano. Para trocar dias, aplique as mudanças em lote (swap) ou transforme uma delas em descanso.`,
           });
         }
       }
-    }
 
-    if (sessionData.day && DAY_ORDER[sessionData.day] !== undefined) {
-      const occupant = await this.sessionRepository.findOne({
-        where: { planId, day: sessionData.day },
-      });
-      if (occupant && occupant.id !== session.id) {
-        throw new BadRequestException({
-          code: 'DAY_COLLISION',
-          message: `O dia ${sessionData.day} já tem sessão neste plano. Para trocar dias, aplique as mudanças em lote (swap) ou transforme uma delas em descanso.`,
-        });
-      }
-      session.dayOrder = DAY_ORDER[sessionData.day];
-    }
+      this.assertWeekAgeLimits(finalSessions, age);
 
-    Object.assign(session, sessionData);
-
-    if (session.type === 'rest') {
-      applyRestState(session);
-    } else if (wasRest) {
-      // Descanso legado pode ter vindo concluído do banco; virar treino não
-      // pode ressuscitar a conclusão que a leitura normalizou.
-      clearSessionMatchState(session);
-    }
-
-    return this.sessionRepository.save(session);
+      const saved = await manager
+        .getRepository(TrainingSession)
+        .save(finalSession);
+      await this.savePlannedWeeklyKm(manager, plan, finalSessions);
+      return saved;
+    });
   }
 
   async updateSessionsBatch(
@@ -288,114 +268,191 @@ export class TrainingPlansService {
       }
     >,
   ) {
-    const plan = await this.planRepository.findOne({
+    const age = await this.athleteProfileService.getAge(userId);
+
+    return this.dataSource.transaction(async (manager) => {
+      const locked = await this.withLockedPlan(manager, planId, userId);
+      if (!locked) return null;
+
+      if (!items || items.length === 0 || items.length > 7) {
+        throw new BadRequestException({
+          code: 'EMPTY_CHANGES',
+          message: 'Informe de 1 a 7 sessões para aplicar em lote.',
+        });
+      }
+
+      const { plan, sessions } = locked;
+      const byId = new Map(sessions.map((s) => [s.id, s]));
+      for (const item of items) {
+        if (!item.sessionId || !byId.has(item.sessionId)) {
+          throw new NotFoundException(
+            `Sessão ${item.sessionId ?? '?'} não encontrada neste plano. Nada foi alterado.`,
+          );
+        }
+      }
+
+      const changedIds = new Set<string>();
+      const finalById = new Map(
+        sessions.map((session) => [session.id, session]),
+      );
+      for (const item of items) {
+        const { sessionId, acknowledgeAgePolicy: _omittedAck, ...data } = item;
+        void _omittedAck;
+        // Itens repetidos no mesmo lote se acumulam, como no PUT sequencial.
+        finalById.set(
+          sessionId,
+          this.applySessionChanges(finalById.get(sessionId)!, data),
+        );
+        changedIds.add(sessionId);
+      }
+
+      const finalSessions = sessions.map(
+        (session) => finalById.get(session.id)!,
+      );
+
+      for (const item of items) {
+        if (item.plannedDistance === undefined || item.plannedDistance <= 0) {
+          continue;
+        }
+        const finalSession = finalById.get(item.sessionId)!;
+        this.assertDistanceForAge(finalSession, item.acknowledgeAgePolicy, age);
+      }
+
+      // O dia é único no plano, então qualquer duplicata no estado final
+      // (inclusive entre sessões fora do lote) rejeita tudo.
+      const seen = new Set<string>();
+      for (const session of finalSessions) {
+        if (seen.has(session.day)) {
+          throw new BadRequestException({
+            code: 'DAY_COLLISION',
+            message: `Aplicação em lote rejeitada: o dia ${session.day} ficaria com duas sessões. Inclua a contrapartida (swap) ou transforme uma delas em descanso. Nada foi alterado.`,
+          });
+        }
+        seen.add(session.day);
+      }
+
+      this.assertWeekAgeLimits(finalSessions, age);
+
+      const changed = finalSessions.filter((session) =>
+        changedIds.has(session.id),
+      );
+      const saved = await manager.getRepository(TrainingSession).save(changed);
+      await this.savePlannedWeeklyKm(manager, plan, finalSessions);
+
+      const savedById = new Map(
+        (Array.isArray(saved) ? saved : [saved]).map((session) => [
+          session.id,
+          session,
+        ]),
+      );
+      return items.map((item) => savedById.get(item.sessionId)!);
+    });
+  }
+
+  /**
+   * Trava a linha do plano e só depois lê as sessões, para que edições
+   * concorrentes no mesmo plano sejam serializadas. A trava é carregada sem
+   * `relations`: o Postgres não aplica `FOR UPDATE` ao lado anulável do
+   * `LEFT JOIN`.
+   */
+  private async withLockedPlan(
+    manager: EntityManager,
+    planId: string,
+    userId: string,
+  ): Promise<{ plan: TrainingPlan; sessions: TrainingSession[] } | null> {
+    const plan = await manager.getRepository(TrainingPlan).findOne({
       where: { id: planId, userId },
+      lock: { mode: 'pessimistic_write' },
     });
     if (!plan) return null;
 
-    if (!items || items.length === 0 || items.length > 7) {
+    // O plano já foi filtrado pelo usuário; a leitura das sessões por `planId`
+    // é segura porque só acontece depois de a trava confirmar o dono.
+    const sessions = await manager
+      .getRepository(TrainingSession)
+      .find({ where: { planId } });
+
+    return { plan, sessions };
+  }
+
+  private applySessionChanges(
+    session: TrainingSession,
+    data: Partial<TrainingSession>,
+  ): TrainingSession {
+    const wasRest = session.type === 'rest';
+    const next = { ...session, ...data } as TrainingSession;
+
+    if (data.day && DAY_ORDER[data.day] !== undefined) {
+      next.dayOrder = DAY_ORDER[data.day];
+    }
+
+    if (next.type === 'rest') {
+      applyRestState(next);
+    } else if (wasRest) {
+      // Descanso legado pode ter vindo concluído do banco; virar treino não
+      // pode ressuscitar a conclusão que a leitura normalizou.
+      clearSessionMatchState(next);
+    }
+
+    return next;
+  }
+
+  private assertDistanceForAge(
+    session: TrainingSession,
+    acknowledgeAgePolicy: boolean | undefined,
+    age: number | undefined,
+  ): void {
+    const plannedDistance = session.plannedDistance ?? 0;
+    if (plannedDistance <= 0 || age === undefined || session.type === 'rest') {
+      return;
+    }
+
+    const distanceKm = plannedDistance / 1000;
+    const assessment = assessDistanceForAge(distanceKm, age);
+    const adjustment = planAgeAdjustment(age);
+    const exceedsAgeCap =
+      adjustment?.maxLongRunKm !== undefined &&
+      distanceKm > adjustment.maxLongRunKm;
+
+    if ((!assessment.allowed || exceedsAgeCap) && !acknowledgeAgePolicy) {
       throw new BadRequestException({
-        code: 'EMPTY_CHANGES',
-        message: 'Informe de 1 a 7 sessões para aplicar em lote.',
+        code: 'AGE_POLICY',
+        message:
+          assessment.message ??
+          adjustment?.reason ??
+          'Distância acima do recomendado para a sua idade.',
+        recommendedMaxKm: adjustment?.maxLongRunKm ?? null,
+        recommendedMinAge: assessment.recommendedMinAge,
+        disclaimer: HEALTH_DISCLAIMER,
       });
     }
+  }
 
-    const sessions = await this.sessionRepository.find({ where: { planId } });
-    const byId = new Map(sessions.map((s) => [s.id, s]));
-    for (const item of items) {
-      if (!item.sessionId || !byId.has(item.sessionId)) {
-        throw new NotFoundException(
-          `Sessão ${item.sessionId ?? '?'} não encontrada neste plano. Nada foi alterado.`,
-        );
-      }
-    }
-
-    const age = await this.athleteProfileService.getAge(userId);
-    for (const item of items) {
-      const { acknowledgeAgePolicy, plannedDistance } = item;
-      if (plannedDistance !== undefined && plannedDistance > 0) {
-        const targetType =
-          item.type ?? byId.get(item.sessionId)?.type ?? 'easy';
-        if (targetType === 'rest') continue;
-        if (age !== undefined) {
-          const distanceKm = plannedDistance / 1000;
-          const assessment = assessDistanceForAge(distanceKm, age);
-          const adjustment = planAgeAdjustment(age);
-          const exceedsAgeCap =
-            adjustment?.maxLongRunKm !== undefined &&
-            distanceKm > adjustment.maxLongRunKm;
-          if ((!assessment.allowed || exceedsAgeCap) && !acknowledgeAgePolicy) {
-            throw new BadRequestException({
-              code: 'AGE_POLICY',
-              message:
-                assessment.message ??
-                adjustment?.reason ??
-                'Distância acima do recomendado para a sua idade.',
-              recommendedMaxKm: adjustment?.maxLongRunKm ?? null,
-              recommendedMinAge: assessment.recommendedMinAge,
-              disclaimer: HEALTH_DISCLAIMER,
-            });
-          }
-        }
-      }
-    }
-
-    // Simula o estado final: o dia é único no plano, então qualquer
-    // duplicata (inclusive com sessões fora do lote) rejeita tudo.
-    const finalDay = new Map<string, string>(
-      sessions.map((s) => [s.id, s.day]),
+  private assertWeekAgeLimits(
+    sessions: TrainingSession[],
+    age: number | undefined,
+  ): void {
+    const assessment = assessWeekForAge(
+      sumPlannedVolumeMeters(sessions),
+      countQualitySessions(sessions),
+      age,
     );
-    for (const item of items) {
-      if (item.day && DAY_ORDER[item.day] !== undefined) {
-        finalDay.set(item.sessionId, item.day);
-      }
-    }
-    const seen = new Map<string, string>();
-    for (const s of sessions) {
-      const day = finalDay.get(s.id) ?? s.day;
-      const other = seen.get(day);
-      if (other !== undefined) {
-        throw new BadRequestException({
-          code: 'DAY_COLLISION',
-          message: `Aplicação em lote rejeitada: o dia ${day} ficaria com duas sessões. Inclua a contrapartida (swap) ou transforme uma delas em descanso. Nada foi alterado.`,
-        });
-      }
-      seen.set(day, s.id);
-    }
 
-    return this.dataSource.transaction(async (manager) => {
-      const repo = manager.getRepository(TrainingSession);
-      const updated: TrainingSession[] = [];
-      for (const item of items) {
-        const current = await repo.findOne({
-          where: { id: item.sessionId, planId },
-        });
-        if (!current) {
-          throw new NotFoundException(
-            `Sessão ${item.sessionId} não encontrada neste plano. Nada foi alterado.`,
-          );
-        }
-        const {
-          sessionId: _omittedId,
-          acknowledgeAgePolicy: _omittedAck,
-          ...data
-        } = item;
-        void _omittedId;
-        void _omittedAck;
-        if (data.day && DAY_ORDER[data.day] !== undefined) {
-          current.dayOrder = DAY_ORDER[data.day];
-        }
-        const wasRest = current.type === 'rest';
-        Object.assign(current, data);
-        if (current.type === 'rest') {
-          applyRestState(current);
-        } else if (wasRest) {
-          clearSessionMatchState(current);
-        }
-        updated.push(await repo.save(current));
-      }
-      return updated;
-    });
+    if (assessment.volumeExceeded || assessment.qualityExceeded) {
+      throw new BadRequestException({
+        code: 'AGE_POLICY',
+        message: assessment.message,
+      });
+    }
+  }
+
+  private async savePlannedWeeklyKm(
+    manager: EntityManager,
+    plan: TrainingPlan,
+    sessions: TrainingSession[],
+  ): Promise<void> {
+    plan.plannedWeeklyKm = sumPlannedVolumeMeters(sessions);
+    await manager.getRepository(TrainingPlan).save(plan);
   }
 
   async regenerateForUser(userId: string) {
@@ -635,7 +692,7 @@ export class TrainingPlansService {
       .then(async (activities) => {
         for (const activity of activities) {
           const sport = activity.sport_type ?? activity.type;
-          if (!['Run', 'TrailRun', 'VirtualRun'].includes(sport)) continue;
+          if (!RUN_SPORTS.includes(sport ?? '')) continue;
 
           try {
             const linked = await this.sessionRepository.count({

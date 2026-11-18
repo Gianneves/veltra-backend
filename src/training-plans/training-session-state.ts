@@ -26,6 +26,20 @@ export function applyRestState(session: TrainingSession): void {
 }
 
 /**
+ * Tipos que contam como estímulo de qualidade para os limites de idade.
+ */
+export const QUALITY_SESSION_TYPES = ['interval', 'tempo', 'fartlek'];
+
+/**
+ * Quantidade de sessões de qualidade da semana.
+ */
+export function countQualitySessions(sessions: TrainingSession[]): number {
+  return sessions.filter((session) =>
+    QUALITY_SESSION_TYPES.includes(session.type),
+  ).length;
+}
+
+/**
  * Volume planejado da semana, em metros: soma das distâncias planejadas das
  * sessões que não são de descanso.
  */
