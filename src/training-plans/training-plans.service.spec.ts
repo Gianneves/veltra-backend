@@ -1591,6 +1591,81 @@ describe('updateSessionsBatch', () => {
     expect(plan.plannedWeeklyKm).toBe(14000);
   });
 
+  it('mantém dia, tipo e volume quando o corpo traz campos omitidos como undefined', async () => {
+    const { service, store, plan } = batchMocks([
+      {
+        id: 'a',
+        day: 'Ter',
+        dayOrder: 1,
+        type: 'easy',
+        plannedDistance: 8000,
+        plannedPace: 360,
+      },
+      {
+        id: 'b',
+        day: 'Qui',
+        dayOrder: 3,
+        type: 'easy',
+        plannedDistance: 6000,
+        plannedPace: 360,
+      },
+    ]);
+
+    await service.updateSession('plan-1', 'a', 'user-1', {
+      plannedPace: 400,
+      day: undefined,
+      type: undefined,
+      plannedDistance: undefined,
+      notes: undefined,
+    });
+
+    expect(store.get('a')).toMatchObject({
+      day: 'Ter',
+      type: 'easy',
+      plannedDistance: 8000,
+      plannedPace: 400,
+    });
+    expect(plan.plannedWeeklyKm).toBe(14000);
+  });
+
+  it('lote ignora campos omitidos como undefined e não inventa colisão de dia', async () => {
+    const { service, store, plan } = batchMocks([
+      {
+        id: 'a',
+        day: 'Ter',
+        dayOrder: 1,
+        type: 'easy',
+        plannedDistance: 8000,
+        plannedPace: 360,
+      },
+      {
+        id: 'b',
+        day: 'Qui',
+        dayOrder: 3,
+        type: 'easy',
+        plannedDistance: 6000,
+        plannedPace: 360,
+      },
+    ]);
+
+    await service.updateSessionsBatch('plan-1', 'user-1', [
+      {
+        sessionId: 'a',
+        plannedDistance: 9000,
+        day: undefined,
+        type: undefined,
+        notes: undefined,
+      },
+    ]);
+
+    expect(store.get('a')).toMatchObject({
+      day: 'Ter',
+      type: 'easy',
+      plannedDistance: 9000,
+    });
+    expect(plan.plannedWeeklyKm).toBe(15000);
+  });
+
   it('não aplica limites de idade na edição sem birthDate', async () => {
     const { service, store } = batchMocks([
       {
