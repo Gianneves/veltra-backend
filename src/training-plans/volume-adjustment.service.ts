@@ -98,6 +98,7 @@ export class VolumeAdjustmentService {
     await this.sessionRepository.save(cuts.map((cut) => cut.session));
 
     await this.planRepository.update(plan.id, {
+      plannedWeeklyKm: sumPlannedVolumeMeters(sessions),
       volumeAdjusted: true,
       volumeAdjustedReason: reason,
       volumeAdjustedAt: new Date(),

@@ -128,6 +128,56 @@ export function planAgeAdjustment(age?: number): AgePlanAdjustment | undefined {
   return undefined;
 }
 
+export interface WeekAgeAssessment {
+  volumeExceeded: boolean;
+  qualityExceeded: boolean;
+  maxWeeklyKm?: number;
+  maxQualitySessions?: number;
+  message?: string;
+}
+
+/**
+ * Limites absolutos de idade para o estado final da semana, usados na edição:
+ * volume planejado em metros e contagem de sessões de qualidade. O
+ * `volumeFactor` de 60+ não entra aqui — só a geração o aplica.
+ */
+export function assessWeekForAge(
+  volumeMeters: number,
+  qualitySessions: number,
+  age?: number,
+): WeekAgeAssessment {
+  const adjustment = planAgeAdjustment(age);
+  if (!adjustment) {
+    return {
+      volumeExceeded: false,
+      qualityExceeded: false,
+      message: undefined,
+    };
+  }
+
+  const { maxWeeklyKm, maxQualitySessions } = adjustment;
+  const volumeExceeded =
+    maxWeeklyKm !== undefined && Math.round(volumeMeters) > maxWeeklyKm * 1000;
+  const qualityExceeded =
+    maxQualitySessions !== undefined && qualitySessions > maxQualitySessions;
+
+  let message: string | undefined;
+  if (volumeExceeded && maxWeeklyKm !== undefined) {
+    const volumeKm = (volumeMeters / 1000).toFixed(1).replace('.', ',');
+    message = `A semana ficaria com ${volumeKm} km de volume planejado; para a sua idade o limite é ${maxWeeklyKm} km. Reduza a distância de uma das sessões e tente de novo. Nada foi alterado.`;
+  } else if (qualityExceeded && maxQualitySessions !== undefined) {
+    message = `A semana ficaria com ${qualitySessions} sessões de qualidade; para a sua idade o limite é ${maxQualitySessions}. Transforme uma delas em treino leve ou descanso e tente de novo. Nada foi alterado.`;
+  }
+
+  return {
+    volumeExceeded,
+    qualityExceeded,
+    maxWeeklyKm,
+    maxQualitySessions,
+    message,
+  };
+}
+
 export interface AgeDistanceAssessment {
   age?: number;
   distanceKm: number;
@@ -172,10 +222,12 @@ export function assessDistanceForAge(
   };
 }
 
-export function checkupAdvice(age?: number): {
-  severity: 'info' | 'medical';
-  message: string;
-} | undefined {
+export function checkupAdvice(age?: number):
+  | {
+      severity: 'info' | 'medical';
+      message: string;
+    }
+  | undefined {
   if (age === undefined || !Number.isFinite(age)) return undefined;
 
   if (age >= 60) {

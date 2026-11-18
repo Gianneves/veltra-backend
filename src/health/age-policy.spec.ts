@@ -1,5 +1,6 @@
 import {
   assessDistanceForAge,
+  assessWeekForAge,
   calculateAge,
   checkupAdvice,
   planAgeAdjustment,
@@ -70,6 +71,40 @@ describe('age-policy', () => {
     it('não ajusta adultos entre 18 e 59', () => {
       expect(planAgeAdjustment(30)).toBeUndefined();
       expect(planAgeAdjustment(59)).toBeUndefined();
+    });
+  });
+
+  describe('assessWeekForAge', () => {
+    it('avalia volume e qualidade da semana pelos limites absolutos da idade', () => {
+      const volume = assessWeekForAge(23000, 1, 12);
+      expect(volume.volumeExceeded).toBe(true);
+      expect(volume.qualityExceeded).toBe(false);
+      expect(volume.maxWeeklyKm).toBe(20);
+      expect(volume.message).toContain('23,0 km de volume planejado');
+      expect(volume.message).toContain('limite é 20 km');
+
+      const quality = assessWeekForAge(9000, 3, 15);
+      expect(quality.volumeExceeded).toBe(false);
+      expect(quality.qualityExceeded).toBe(true);
+      expect(quality.maxQualitySessions).toBe(1);
+      expect(quality.message).toContain('3 sessões de qualidade');
+      expect(quality.message).toContain('limite é 1');
+
+      const older = assessWeekForAge(30000, 3, 65);
+      expect(older.volumeExceeded).toBe(false);
+      expect(older.qualityExceeded).toBe(true);
+      expect(older.maxWeeklyKm).toBeUndefined();
+      expect(older.maxQualitySessions).toBe(2);
+
+      expect(assessWeekForAge(30000, 3, undefined)).toMatchObject({
+        volumeExceeded: false,
+        qualityExceeded: false,
+      });
+      expect(assessWeekForAge(30000, 3, 30)).toMatchObject({
+        volumeExceeded: false,
+        qualityExceeded: false,
+        message: undefined,
+      });
     });
   });
 

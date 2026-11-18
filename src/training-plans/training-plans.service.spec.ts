@@ -5,8 +5,8 @@ import { TrainingPattern, emptyTrainingPattern } from './training-pattern';
 import { Goal } from 'src/goals/entities/goal.entity';
 import type { Activity } from 'src/activities/entities/activity.entity';
 import type { AthleteProfile } from './athlete-profile.service';
-import type { TrainingPlan } from './entities/training-plan.entity';
-import type { TrainingSession } from './entities/training-session.entity';
+import { TrainingPlan } from './entities/training-plan.entity';
+import { TrainingSession } from './entities/training-session.entity';
 
 let planCounter = 0;
 let sessionCounter = 0;
@@ -945,6 +945,21 @@ describe('TrainingPlansService', () => {
 });
 
 describe('updateSessionsBatch', () => {
+  async function rejectionOf(
+    promise: Promise<unknown>,
+  ): Promise<{ code?: string; message?: string }> {
+    try {
+      await promise;
+    } catch (error) {
+      expect(error).toBeInstanceOf(BadRequestException);
+      return (error as BadRequestException).getResponse() as {
+        code?: string;
+        message?: string;
+      };
+    }
+    throw new Error('esperava uma recusa');
+  }
+
   interface BatchRow {
     id: string;
     day: string;
@@ -963,14 +978,38 @@ describe('updateSessionsBatch', () => {
     matchedAt?: Date | null;
   }
 
-  function batchMocks(initial: BatchRow[]) {
+  function batchMocks(
+    initial: BatchRow[],
+    options: { age?: number; plannedWeeklyKm?: number } = {},
+  ) {
     const store = new Map<string, BatchRow>(
       initial.map((s) => [s.id, { ...s, planId: 'plan-1' }]),
     );
+    const initialVolume = initial
+      .filter((s) => s.type !== 'rest')
+      .reduce((sum, s) => sum + (s.plannedDistance ?? 0), 0);
+    const plan = {
+      id: 'plan-1',
+      userId: 'user-1',
+      plannedWeeklyKm: options.plannedWeeklyKm ?? initialVolume,
+    };
     const planRepository = {
-      findOne: jest.fn(() =>
-        Promise.resolve({ id: 'plan-1', userId: 'user-1' }),
+      findOne: jest.fn(
+        ({
+          where,
+        }: {
+          where: { id?: string; userId?: string };
+        }): Promise<typeof plan | null> =>
+          Promise.resolve(
+            where?.id === plan.id && where?.userId === plan.userId
+              ? plan
+              : null,
+          ),
       ),
+      save: jest.fn((item: typeof plan) => {
+        Object.assign(plan, item);
+        return Promise.resolve(item);
+      }),
     };
     const sessionRepository = {
       find: jest.fn(
@@ -988,33 +1027,36 @@ describe('updateSessionsBatch', () => {
               : ([...store.values()].find((s) => s.day === where?.day) ?? null),
           ),
       ),
-      save: jest.fn((s: BatchRow): Promise<BatchRow> => {
-        store.set(s.id, { ...s });
-        return Promise.resolve({ ...s });
-      }),
+      save: jest.fn(
+        (s: BatchRow | BatchRow[]): Promise<BatchRow | BatchRow[]> => {
+          const items = Array.isArray(s) ? s : [s];
+          for (const item of items) store.set(item.id, { ...item });
+          return Promise.resolve(Array.isArray(s) ? items : { ...s });
+        },
+      ),
     };
     const athleteProfileService = {
       getAge: jest.fn(
-        (): Promise<number | undefined> => Promise.resolve(undefined),
+        (): Promise<number | undefined> => Promise.resolve(options.age),
       ),
     };
     const manager = {
-      getRepository: () => ({
-        findOne: jest.fn(
-          ({ where }: { where: { id: string } }): Promise<BatchRow | null> =>
-            Promise.resolve(store.get(where.id) ?? null),
-        ),
-        save: jest.fn((s: BatchRow): Promise<BatchRow> => {
-          store.set(s.id, { ...s });
-          return Promise.resolve({ ...s });
-        }),
-      }),
+      getRepository: (entity: unknown) =>
+        entity === TrainingPlan ? planRepository : sessionRepository,
     };
+    // Serializa as transações como a trava `pessimistic_write` do Postgres: a
+    // segunda só lê o estado depois de a primeira terminar.
+    let queue: Promise<unknown> = Promise.resolve();
     const dataSource = {
       transaction: jest.fn(
-        (
-          fn: (manager: typeof manager) => Promise<BatchRow[]>,
-        ): Promise<BatchRow[]> => fn(manager),
+        <T>(fn: (manager: typeof manager) => Promise<T>): Promise<T> => {
+          const run = queue.then(() => fn(manager));
+          queue = run.then(
+            () => undefined,
+            () => undefined,
+          );
+          return run;
+        },
       ),
     };
     const service = new TrainingPlansService(
@@ -1027,7 +1069,15 @@ describe('updateSessionsBatch', () => {
       {} as any,
       dataSource as any,
     );
-    return { service, store, sessionRepository, dataSource };
+    return {
+      service,
+      store,
+      plan,
+      sessionRepository,
+      planRepository,
+      dataSource,
+      athleteProfileService,
+    };
   }
 
   it('aplica swap de dias em lote de forma atômica', async () => {
@@ -1062,7 +1112,7 @@ describe('updateSessionsBatch', () => {
   });
 
   it('rejeita lote que criaria dia duplicado sem aplicar nada', async () => {
-    const { service, store, dataSource } = batchMocks([
+    const { service, store, sessionRepository } = batchMocks([
       {
         id: 'a',
         day: 'Ter',
@@ -1089,7 +1139,7 @@ describe('updateSessionsBatch', () => {
     await expect(promise).rejects.toMatchObject({
       response: { code: 'DAY_COLLISION' },
     });
-    expect(dataSource.transaction).not.toHaveBeenCalled();
+    expect(sessionRepository.save).not.toHaveBeenCalled();
     expect(store.get('a')?.day).toBe('Ter');
   });
 
@@ -1243,6 +1293,332 @@ describe('updateSessionsBatch', () => {
     await expect(promise).rejects.toMatchObject({
       response: { code: 'DAY_COLLISION' },
     });
+  });
+
+  it('recusa edição individual que estoura o volume semanal da idade sem gravar nada', async () => {
+    const { service, store, plan, sessionRepository, planRepository } =
+      batchMocks(
+        [
+          {
+            id: 'rest',
+            day: 'Seg',
+            dayOrder: 0,
+            type: 'rest',
+            plannedDistance: 0,
+            plannedPace: 0,
+          },
+          {
+            id: 'a',
+            day: 'Ter',
+            dayOrder: 1,
+            type: 'easy',
+            plannedDistance: 6000,
+            plannedPace: 360,
+          },
+          {
+            id: 'b',
+            day: 'Qui',
+            dayOrder: 3,
+            type: 'long_run',
+            plannedDistance: 6000,
+            plannedPace: 380,
+          },
+          {
+            id: 'c',
+            day: 'Sáb',
+            dayOrder: 5,
+            type: 'easy',
+            plannedDistance: 6000,
+            plannedPace: 360,
+          },
+        ],
+        { age: 12, plannedWeeklyKm: 18000 },
+      );
+
+    const promise = service.updateSession('plan-1', 'rest', 'user-1', {
+      type: 'easy',
+      plannedDistance: 5000,
+      plannedPace: 400,
+    });
+
+    const response = await rejectionOf(promise);
+    expect(response.code).toBe('AGE_POLICY');
+    expect(response.message).toContain('23,0 km de volume planejado');
+    expect(response.message).toContain('limite é 20 km');
+
+    expect(sessionRepository.save).not.toHaveBeenCalled();
+    expect(planRepository.save).not.toHaveBeenCalled();
+    expect(plan.plannedWeeklyKm).toBe(18000);
+    expect(store.get('rest')?.type).toBe('rest');
+    expect(store.get('rest')?.plannedDistance).toBe(0);
+  });
+
+  it('lote recusa qualidade acima do limite da idade sem gravar nada', async () => {
+    const { service, store, sessionRepository, planRepository } = batchMocks(
+      [
+        {
+          id: 'a',
+          day: 'Ter',
+          dayOrder: 1,
+          type: 'tempo',
+          plannedDistance: 5000,
+          plannedPace: 340,
+        },
+        {
+          id: 'b',
+          day: 'Qui',
+          dayOrder: 3,
+          type: 'easy',
+          plannedDistance: 4000,
+          plannedPace: 380,
+        },
+        {
+          id: 'c',
+          day: 'Sáb',
+          dayOrder: 5,
+          type: 'easy',
+          plannedDistance: 4000,
+          plannedPace: 380,
+        },
+      ],
+      { age: 15 },
+    );
+
+    const promise = service.updateSessionsBatch('plan-1', 'user-1', [
+      { sessionId: 'b', type: 'interval' },
+      { sessionId: 'c', type: 'fartlek' },
+    ]);
+
+    const response = await rejectionOf(promise);
+    expect(response.code).toBe('AGE_POLICY');
+    expect(response.message).toContain('3 sessões de qualidade');
+    expect(response.message).toContain('limite é 1');
+
+    expect(sessionRepository.save).not.toHaveBeenCalled();
+    expect(planRepository.save).not.toHaveBeenCalled();
+    expect(store.get('b')?.type).toBe('easy');
+    expect(store.get('c')?.type).toBe('easy');
+  });
+
+  it('aceita distância acima do teto com acknowledgeAgePolicy', async () => {
+    const { service, store, plan } = batchMocks(
+      [
+        {
+          id: 'a',
+          day: 'Ter',
+          dayOrder: 1,
+          type: 'easy',
+          plannedDistance: 5000,
+          plannedPace: 380,
+        },
+      ],
+      { age: 12 },
+    );
+
+    const saved = await service.updateSession('plan-1', 'a', 'user-1', {
+      plannedDistance: 8000,
+      acknowledgeAgePolicy: true,
+    });
+
+    expect(saved?.plannedDistance).toBe(8000);
+    expect(store.get('a')?.plannedDistance).toBe(8000);
+    expect(plan.plannedWeeklyKm).toBe(8000);
+  });
+
+  it('mantém as recusas de volume e qualidade mesmo com acknowledgeAgePolicy', async () => {
+    const volume = batchMocks(
+      [
+        {
+          id: 'rest',
+          day: 'Seg',
+          dayOrder: 0,
+          type: 'rest',
+          plannedDistance: 0,
+          plannedPace: 0,
+        },
+        {
+          id: 'a',
+          day: 'Ter',
+          dayOrder: 1,
+          type: 'easy',
+          plannedDistance: 6000,
+          plannedPace: 360,
+        },
+        {
+          id: 'b',
+          day: 'Qui',
+          dayOrder: 3,
+          type: 'long_run',
+          plannedDistance: 6000,
+          plannedPace: 380,
+        },
+        {
+          id: 'c',
+          day: 'Sáb',
+          dayOrder: 5,
+          type: 'easy',
+          plannedDistance: 6000,
+          plannedPace: 360,
+        },
+      ],
+      { age: 12, plannedWeeklyKm: 18000 },
+    );
+
+    const volumeResponse = await rejectionOf(
+      volume.service.updateSession('plan-1', 'rest', 'user-1', {
+        type: 'easy',
+        plannedDistance: 5000,
+        plannedPace: 400,
+        acknowledgeAgePolicy: true,
+      }),
+    );
+    expect(volumeResponse.code).toBe('AGE_POLICY');
+    expect(volumeResponse.message).toContain('volume planejado');
+    expect(volume.sessionRepository.save).not.toHaveBeenCalled();
+
+    const quality = batchMocks(
+      [
+        {
+          id: 'a',
+          day: 'Ter',
+          dayOrder: 1,
+          type: 'tempo',
+          plannedDistance: 5000,
+          plannedPace: 340,
+        },
+        {
+          id: 'b',
+          day: 'Qui',
+          dayOrder: 3,
+          type: 'easy',
+          plannedDistance: 4000,
+          plannedPace: 380,
+        },
+        {
+          id: 'c',
+          day: 'Sáb',
+          dayOrder: 5,
+          type: 'easy',
+          plannedDistance: 4000,
+          plannedPace: 380,
+        },
+      ],
+      { age: 15 },
+    );
+
+    const qualityResponse = await rejectionOf(
+      quality.service.updateSessionsBatch('plan-1', 'user-1', [
+        { sessionId: 'b', type: 'interval', acknowledgeAgePolicy: true },
+        { sessionId: 'c', type: 'fartlek', acknowledgeAgePolicy: true },
+      ]),
+    );
+    expect(qualityResponse.code).toBe('AGE_POLICY');
+    expect(qualityResponse.message).toContain('sessões de qualidade');
+    expect(quality.sessionRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('serializa duas edições concorrentes no mesmo plano e a segunda vê o estado da primeira', async () => {
+    const { service, store } = batchMocks(
+      [
+        {
+          id: 'a',
+          day: 'Ter',
+          dayOrder: 1,
+          type: 'easy',
+          plannedDistance: 8000,
+          plannedPace: 360,
+        },
+        {
+          id: 'b',
+          day: 'Qui',
+          dayOrder: 3,
+          type: 'easy',
+          plannedDistance: 6000,
+          plannedPace: 360,
+        },
+      ],
+      { plannedWeeklyKm: 14000 },
+    );
+
+    const results = await Promise.allSettled([
+      service.updateSession('plan-1', 'a', 'user-1', { day: 'Sáb' }),
+      service.updateSession('plan-1', 'b', 'user-1', { day: 'Sáb' }),
+    ]);
+
+    const rejected = results.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toMatchObject({
+      response: { code: 'DAY_COLLISION' },
+    });
+
+    expect(store.get('a')?.day).toBe('Sáb');
+    expect(store.get('b')?.day).toBe('Qui');
+  });
+
+  it('grava plannedWeeklyKm com o volume do estado final após edição individual e após lote', async () => {
+    const { service, plan } = batchMocks(
+      [
+        {
+          id: 'a',
+          day: 'Ter',
+          dayOrder: 1,
+          type: 'easy',
+          plannedDistance: 8000,
+          plannedPace: 360,
+        },
+        {
+          id: 'b',
+          day: 'Qui',
+          dayOrder: 3,
+          type: 'easy',
+          plannedDistance: 6000,
+          plannedPace: 360,
+        },
+      ],
+      { plannedWeeklyKm: 999 },
+    );
+
+    await service.updateSession('plan-1', 'a', 'user-1', {
+      plannedDistance: 9000,
+    });
+    expect(plan.plannedWeeklyKm).toBe(15000);
+
+    await service.updateSessionsBatch('plan-1', 'user-1', [
+      { sessionId: 'b', plannedDistance: 5000 },
+    ]);
+    expect(plan.plannedWeeklyKm).toBe(14000);
+  });
+
+  it('não aplica limites de idade na edição sem birthDate', async () => {
+    const { service, store } = batchMocks([
+      {
+        id: 'a',
+        day: 'Ter',
+        dayOrder: 1,
+        type: 'easy',
+        plannedDistance: 30000,
+        plannedPace: 360,
+      },
+      {
+        id: 'b',
+        day: 'Qui',
+        dayOrder: 3,
+        type: 'easy',
+        plannedDistance: 20000,
+        plannedPace: 360,
+      },
+    ]);
+
+    const updated = await service.updateSessionsBatch('plan-1', 'user-1', [
+      { sessionId: 'a', type: 'interval' },
+      { sessionId: 'b', type: 'fartlek' },
+    ]);
+
+    expect(updated).toHaveLength(2);
+    expect(store.get('a')?.type).toBe('interval');
+    expect(store.get('b')?.type).toBe('fartlek');
   });
 });
 

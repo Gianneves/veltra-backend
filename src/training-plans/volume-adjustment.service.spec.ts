@@ -157,6 +157,37 @@ describe('VolumeAdjustmentService', () => {
     expect(updateArg.volumeAdjustedReason).toContain('além do planejado');
   });
 
+  it('recalcula plannedWeeklyKm depois do corte', async () => {
+    const { service, planRepository } = createService();
+    const easy = makeSession({ dayOrder: 3, plannedDistance: 10000 });
+    const longRun = makeSession({
+      dayOrder: 4,
+      type: 'long_run',
+      plannedDistance: 10000,
+    });
+    planRepository.findOne.mockResolvedValue(
+      makePlan([
+        makeSession({
+          dayOrder: 2,
+          completed: true,
+          plannedDistance: 10000,
+          actualDistance: 12000,
+        }),
+        easy,
+        longRun,
+      ]),
+    );
+
+    await service.adjustForOvershoot({
+      ...trigger,
+      plannedDistance: 10000,
+      actualDistance: 12000,
+    });
+
+    const updateArg = planRepository.update.mock.calls[0][1];
+    expect(updateArg.plannedWeeklyKm).toBe(29500);
+  });
+
   it('é idempotente em disparos repetidos', async () => {
     const { service, planRepository, sessionRepository } = createService();
     const easy = makeSession({ dayOrder: 3, plannedDistance: 10000 });
