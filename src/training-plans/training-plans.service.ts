@@ -57,6 +57,7 @@ import {
   normalizePlanReadState,
   sumPlannedVolumeMeters,
 } from './training-session-state';
+import { buildPlanAnnotations } from './plan-annotations';
 
 export interface generateFromGoalResult {
   plans: TrainingPlan[];
@@ -2090,40 +2091,21 @@ export class TrainingPlansService {
     const review = await this.aiService.generatePlanReview(context);
     if (!review) return;
 
-    for (const week of review.weeks) {
-      const index = summaries.findIndex((s) =>
-        s.weekStart.startsWith(week.weekStart.slice(0, 10)),
+    const annotations = buildPlanAnnotations({
+      review,
+      plans,
+      weekOneNotes: [patternNote, targetNote],
+    });
+
+    for (const annotation of annotations.plans) {
+      await this.planRepository.update(annotation.planId, annotation.patch);
+    }
+
+    for (const annotation of annotations.sessions) {
+      await this.sessionRepository.update(
+        annotation.sessionId,
+        annotation.patch,
       );
-      if (index < 0) continue;
-
-      const plan = plans[index];
-
-      const coachNotes =
-        index === 0
-          ? [patternNote, targetNote, review.overview, week.rationale]
-              .filter((part): part is string => !!part)
-              .join('\n\n')
-          : week.rationale;
-
-      await this.planRepository.update(plan.id, {
-        focus: week.focus?.slice(0, 120),
-        coachNotes: coachNotes?.slice(0, 1200),
-      });
-
-      const sessions = (plan.sessions ?? []).sort(
-        (a, b) => a.dayOrder - b.dayOrder,
-      );
-
-      for (let i = 0; i < sessions.length; i++) {
-        const session = sessions[i];
-        const tip =
-          week.tips.find((t) => t.day === session.day) ?? week.tips[i];
-        if (!tip?.text) continue;
-        const base = session.notes ?? '';
-        await this.sessionRepository.update(session.id, {
-          notes: `${base} Dica do Coach: ${tip.text}`.slice(0, 500),
-        });
-      }
     }
   }
 }
