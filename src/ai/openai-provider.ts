@@ -53,13 +53,10 @@ export class OpenAiProvider extends AiProvider {
     request: AiProviderRequest,
     tier: AiTier,
   ): Promise<AiProviderResult> {
-    const controller = new AbortController();
-    const timeout = this.startTimeout(request.timeoutMs, controller);
-
-    try {
+    return this.execute(request, async (signal) => {
       const model = this.createModel(request, tier);
       const response = await model.invoke(toMessages(request.messages), {
-        signal: controller.signal,
+        signal,
       });
 
       return {
@@ -67,11 +64,7 @@ export class OpenAiProvider extends AiProvider {
         decision: this.decision(request, tier),
         usage: response.usage_metadata,
       };
-    } catch (err) {
-      throw this.unavailable(err, timeout.timedOut());
-    } finally {
-      timeout.clear();
-    }
+    });
   }
 
   async stream(
@@ -79,17 +72,14 @@ export class OpenAiProvider extends AiProvider {
     tier: AiTier,
     onToken: (token: string) => void,
   ): Promise<AiProviderResult> {
-    const controller = new AbortController();
-    const timeout = this.startTimeout(request.timeoutMs, controller);
-
-    let text = '';
-    let usage: unknown;
-
-    try {
+    return this.execute(request, async (signal) => {
       const model = this.createModel(request, tier);
       const stream = await model.stream(toMessages(request.messages), {
-        signal: controller.signal,
+        signal,
       });
+
+      let text = '';
+      let usage: unknown;
 
       for await (const chunk of stream) {
         if (chunk.usage_metadata) usage = chunk.usage_metadata;
@@ -100,11 +90,7 @@ export class OpenAiProvider extends AiProvider {
       }
 
       return { text, decision: this.decision(request, tier), usage };
-    } catch (err) {
-      throw this.unavailable(err, timeout.timedOut());
-    } finally {
-      timeout.clear();
-    }
+    });
   }
 
   createEmbedding(text: string): Promise<number[]> {
@@ -135,6 +121,22 @@ export class OpenAiProvider extends AiProvider {
       model: this.modelRouter.modelName(tier),
       reason: 'escalation',
     };
+  }
+
+  private async execute<T>(
+    request: AiProviderRequest,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timeout = this.startTimeout(request.timeoutMs, controller);
+
+    try {
+      return await run(controller.signal);
+    } catch (err) {
+      throw this.unavailable(err, timeout.timedOut());
+    } finally {
+      timeout.clear();
+    }
   }
 
   private startTimeout(

@@ -283,7 +283,7 @@ export class AiService {
     try {
       const result = await this.provider.stream(request, decision.tier, track);
 
-      this.logUsage('coach_reply', result.decision, result.usage);
+      this.logUsage('coach_reply', decision, result.usage);
       return splitCoachReply(result.text);
     } catch (err) {
       console.error('Erro ao gerar resposta do coach:', (err as Error).message);
@@ -467,7 +467,7 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
     try {
       const response = await this.provider.complete(request, decision.tier);
 
-      this.logUsage(task, response.decision, response.usage);
+      this.logUsage(task, decision, response.usage);
       const parsed = parse(response.text);
       if (parsed !== null) return parsed;
 
@@ -478,7 +478,15 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
       console.info(`[ai] task=${task} tier=premium reason=parse_escalation`);
       const retry = await this.provider.complete(request, 'premium');
 
-      this.logUsage(task, retry.decision, retry.usage);
+      this.logUsage(
+        task,
+        {
+          tier: 'premium',
+          model: retry.decision.model,
+          reason: 'parse_escalation',
+        },
+        retry.usage,
+      );
 
       return parse(retry.text);
     } catch (err) {

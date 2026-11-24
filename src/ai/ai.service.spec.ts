@@ -7,13 +7,16 @@ import {
   type AiProviderResult,
 } from './ai-provider';
 import { OpenAiProvider } from './openai-provider';
-import type { AiTier, AiTask } from './model-router';
+import type { AiTier, AiTask, ModelDecision } from './model-router';
 
 type FakeProvider = {
-  decide: jest.Mock;
-  complete: jest.Mock;
-  stream: jest.Mock;
-  canEscalate: jest.Mock;
+  decide: jest.Mock<ModelDecision, [AiProviderRequest]>;
+  complete: jest.Mock<Promise<AiProviderResult>, [AiProviderRequest, AiTier]>;
+  stream: jest.Mock<
+    Promise<AiProviderResult>,
+    [AiProviderRequest, AiTier, (token: string) => void]
+  >;
+  canEscalate: jest.Mock<boolean, []>;
 };
 
 const INSIGHT_JSON = JSON.stringify({
@@ -65,11 +68,23 @@ function textForTask(task: AiTask): string {
   }
 }
 
+function completeCalls(
+  provider: FakeProvider,
+): Array<[AiProviderRequest, AiTier]> {
+  return provider.complete.mock.calls;
+}
+
+function streamCalls(
+  provider: FakeProvider,
+): Array<[AiProviderRequest, AiTier, (token: string) => void]> {
+  return provider.stream.mock.calls;
+}
+
 describe('AiService', () => {
   let service: AiService;
   let provider: FakeProvider;
   let openAi: { createEmbedding: jest.Mock };
-  const originalEnv = { ...process.env };
+  const originalApiKey = process.env.OPENAI_API_KEY;
 
   beforeEach(async () => {
     process.env.OPENAI_API_KEY = 'test-key';
@@ -110,7 +125,8 @@ describe('AiService', () => {
   });
 
   afterAll(() => {
-    process.env = originalEnv;
+    if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalApiKey;
   });
 
   it('should be defined', () => {
@@ -118,14 +134,10 @@ describe('AiService', () => {
   });
 
   it('pede cada tarefa ao fornecedor com o prompt, a temperatura, o teto e o timeout do LLD', async () => {
-    const completeCalls = provider.complete.mock.calls as unknown as Array<
-      [AiProviderRequest, AiTier]
-    >;
-    const streamCalls = provider.stream.mock.calls as unknown as Array<
-      [AiProviderRequest, AiTier, (token: string) => void]
-    >;
-    const lastComplete = () => completeCalls[completeCalls.length - 1][0];
-    const lastStream = () => streamCalls[streamCalls.length - 1]?.[0];
+    const complete = completeCalls(provider);
+    const streamed = streamCalls(provider);
+    const lastComplete = () => complete[complete.length - 1][0];
+    const lastStream = () => streamed[streamed.length - 1]?.[0];
 
     const expectRequest = (
       request: AiProviderRequest | undefined,
@@ -247,14 +259,12 @@ describe('AiService', () => {
       .mockResolvedValueOnce(result(INSIGHT_JSON, 'premium'));
 
     const content = await service.generateActivityInsight('contexto');
-    const completeCalls = provider.complete.mock.calls as unknown as Array<
-      [AiProviderRequest, AiTier]
-    >;
+    const complete = completeCalls(provider);
 
     expect(content?.summary).toBe('Resumo');
     expect(provider.complete).toHaveBeenCalledTimes(2);
-    expect(completeCalls[0][1]).toBe('cheap');
-    expect(completeCalls[1][1]).toBe('premium');
+    expect(complete[0][1]).toBe('cheap');
+    expect(complete[1][1]).toBe('premium');
   });
 
   it('repete no premium quando o streaming falha antes do primeiro token', async () => {
@@ -284,14 +294,12 @@ describe('AiService', () => {
       'oi',
       () => undefined,
     );
-    const streamCalls = provider.stream.mock.calls as unknown as Array<
-      [AiProviderRequest, AiTier, (token: string) => void]
-    >;
+    const streamed = streamCalls(provider);
 
     expect(reply?.text).toBe('Resposta premium');
     expect(provider.stream).toHaveBeenCalledTimes(2);
-    expect(streamCalls[0][1]).toBe('cheap');
-    expect(streamCalls[1][1]).toBe('premium');
+    expect(streamed[0][1]).toBe('cheap');
+    expect(streamed[1][1]).toBe('premium');
   });
 
   it('devolve o texto parcial quando o streaming falha depois do primeiro token', async () => {
