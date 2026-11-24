@@ -252,4 +252,50 @@ describe('buildPlanAnnotations', () => {
     expect(sessionNotes.startsWith('N'.repeat(480))).toBe(true);
     expect(sessionNotes).toContain('Dica do Coach: ');
   });
+
+  it('preserva a atualização de cada revisão quando a semana aparece duas vezes', () => {
+    const plan = makePlan({
+      id: 'plan-1',
+      sessions: [
+        makeSession({
+          id: 's-ter',
+          planId: 'plan-1',
+          day: 'Ter',
+          dayOrder: 1,
+          notes: 'Rodagem leve.',
+        }),
+      ],
+    });
+    const review: PlanReview = {
+      overview: 'Estratégia geral.',
+      weeks: [
+        {
+          weekStart: '2026-09-14',
+          focus: 'Primeira leitura',
+          rationale: 'Primeira justificativa.',
+          tips: [{ day: 'Ter', text: 'Primeira dica.' }],
+        },
+        {
+          weekStart: '2026-09-14',
+          focus: 'Segunda leitura',
+          rationale: 'Segunda justificativa.',
+          tips: [{ day: 'Ter', text: 'Segunda dica.' }],
+        },
+      ],
+    };
+
+    const result = buildPlanAnnotations({ review, plans: [plan] });
+
+    expect(result.plans.map((annotation) => annotation.patch.focus)).toEqual([
+      'Primeira leitura',
+      'Segunda leitura',
+    ]);
+    expect(result.sessions.map((annotation) => annotation.sessionId)).toEqual([
+      's-ter',
+      's-ter',
+    ]);
+    expect(result.sessions[1].patch.notes).toBe(
+      'Rodagem leve. Dica do Coach: Segunda dica.',
+    );
+  });
 });
