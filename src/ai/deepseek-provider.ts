@@ -20,11 +20,7 @@ const DEFAULT_MODEL = 'deepseek-chat';
 @Injectable()
 export class DeepSeekProvider extends AiProvider {
   decide(): ModelDecision {
-    return {
-      tier: 'cheap',
-      model: this.modelName(),
-      reason: 'fallback_single_model',
-    };
+    return this.decision('cheap');
   }
 
   canEscalate(): boolean {

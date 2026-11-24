@@ -15,6 +15,11 @@ const PRIMARY: AiProviderName = 'openai';
 const SECONDARY: AiProviderName = 'deepseek';
 const SWITCH_STATUS = [401, 402, 403, 429];
 
+interface ProviderRoute {
+  marker: { until: number } | null;
+  secondary: boolean;
+}
+
 @Injectable()
 export class AiFailoverService extends AiProvider {
   constructor(
@@ -43,35 +48,23 @@ export class AiFailoverService extends AiProvider {
     request: AiProviderRequest,
     tier: AiTier,
   ): Promise<AiProviderResult> {
-    const secondaryConfigured = this.secondary.isConfigured();
-
-    if (!this.primary.isConfigured()) {
-      return this.onlySecondary(secondaryConfigured, () =>
-        this.secondary.complete(request, tier),
-      );
-    }
-
-    const marker = secondaryConfigured ? await this.state.primaryDown() : null;
-    if (marker && marker.until > Date.now()) {
-      return this.untilSecondaryEnds(() =>
-        this.secondary.complete(request, tier),
-      );
+    const route = await this.route();
+    if (route.secondary) {
+      return this.runSecondary(() => this.secondary.complete(request, tier));
     }
 
     try {
       const result = await this.primary.complete(request, tier);
-      if (!result.text.trim()) {
+      if (!result.text.trim() && this.secondary.isConfigured()) {
         throw new AiProviderUnavailableError(PRIMARY, 'empty');
       }
-      if (marker) await this.state.clearPrimaryDown();
+      if (route.marker) await this.state.clearPrimaryDown();
       return result;
     } catch (err) {
-      if (!secondaryConfigured || !this.switchesOn(err, true)) throw err;
+      if (!this.secondary.isConfigured() || !this.switchesOn(err)) throw err;
 
       await this.state.markPrimaryDown();
-      return this.untilSecondaryEnds(() =>
-        this.secondary.complete(request, tier),
-      );
+      return this.runSecondary(() => this.secondary.complete(request, tier));
     }
   }
 
@@ -80,17 +73,9 @@ export class AiFailoverService extends AiProvider {
     tier: AiTier,
     onToken: (token: string) => void,
   ): Promise<AiProviderResult> {
-    const secondaryConfigured = this.secondary.isConfigured();
-
-    if (!this.primary.isConfigured()) {
-      return this.onlySecondary(secondaryConfigured, () =>
-        this.secondary.stream(request, tier, onToken),
-      );
-    }
-
-    const marker = secondaryConfigured ? await this.state.primaryDown() : null;
-    if (marker && marker.until > Date.now()) {
-      return this.untilSecondaryEnds(() =>
+    const route = await this.route();
+    if (route.secondary) {
+      return this.runSecondary(() =>
         this.secondary.stream(request, tier, onToken),
       );
     }
@@ -101,31 +86,40 @@ export class AiFailoverService extends AiProvider {
         emitted = true;
         onToken(token);
       });
-      if (marker) await this.state.clearPrimaryDown();
+      if (route.marker) await this.state.clearPrimaryDown();
       return result;
     } catch (err) {
-      if (!secondaryConfigured || !this.switchesOn(err, false)) throw err;
+      if (!this.secondary.isConfigured() || !this.switchesOn(err)) throw err;
 
       await this.state.markPrimaryDown();
       if (emitted) throw err;
 
-      return this.untilSecondaryEnds(() =>
+      return this.runSecondary(() =>
         this.secondary.stream(request, tier, onToken),
       );
     }
   }
 
-  private async onlySecondary<T>(
-    configured: boolean,
-    call: () => Promise<T>,
-  ): Promise<T> {
-    if (!configured) {
-      throw new AiProviderUnavailableError(SECONDARY, 'transport');
+  private async route(): Promise<ProviderRoute> {
+    if (!this.primary.isConfigured()) {
+      return { marker: null, secondary: true };
     }
-    return call();
+    if (!this.secondary.isConfigured()) {
+      return { marker: null, secondary: false };
+    }
+
+    const marker = await this.state.primaryDown();
+    return {
+      marker,
+      secondary: marker !== null && marker.until > Date.now(),
+    };
   }
 
-  private async untilSecondaryEnds<T>(call: () => Promise<T>): Promise<T> {
+  private async runSecondary<T>(call: () => Promise<T>): Promise<T> {
+    if (!this.secondary.isConfigured()) {
+      throw new AiProviderUnavailableError(SECONDARY, 'transport');
+    }
+
     try {
       return await call();
     } catch (err) {
@@ -134,11 +128,11 @@ export class AiFailoverService extends AiProvider {
     }
   }
 
-  private switchesOn(err: unknown, allowEmpty: boolean): boolean {
+  private switchesOn(err: unknown): boolean {
     if (!(err instanceof AiProviderUnavailableError)) return false;
 
     if (err.reason === 'transport' || err.reason === 'timeout') return true;
-    if (err.reason === 'empty') return allowEmpty;
+    if (err.reason === 'empty') return true;
 
     if (err.reason === 'http' && err.status !== undefined) {
       return SWITCH_STATUS.includes(err.status) || err.status >= 500;

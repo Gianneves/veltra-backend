@@ -8,13 +8,13 @@ const DEFAULT_COOLDOWN_SECONDS = 60;
 export class AiProviderStateService {
   constructor(private readonly redis: RedisService) {}
 
-  cooldownSeconds(): number {
+  private cooldownSeconds(): number {
     const raw = process.env.AI_FAILOVER_COOLDOWN_SECONDS?.trim();
     if (!raw) return DEFAULT_COOLDOWN_SECONDS;
 
     const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_COOLDOWN_SECONDS;
-    return parsed;
+    if (Number.isNaN(parsed)) return DEFAULT_COOLDOWN_SECONDS;
+    return parsed <= 0 ? 0 : parsed;
   }
 
   async primaryDown(): Promise<{ until: number } | null> {

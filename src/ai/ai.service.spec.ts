@@ -568,24 +568,24 @@ describe('AiService com failover', () => {
     expect(secondary.complete).toHaveBeenCalledTimes(1);
   });
 
-  it('troca de fornecedor no streaming antes do primeiro token', async () => {
+  it('troca de fornecedor no streaming só antes do primeiro token', async () => {
     primary.stream.mockRejectedValueOnce(
       new AiProviderUnavailableError('openai', 'transport'),
     );
 
-    const reply = await service.generateCoachReplyStream(
+    const switched = await service.generateCoachReplyStream(
       'Prompt',
       [],
       'oi',
       () => undefined,
     );
 
-    expect(reply?.text).toBe('Resposta do coach');
-    expect(reply?.provider).toBe('deepseek');
+    expect(switched?.text).toBe('Resposta do coach');
+    expect(switched?.provider).toBe('deepseek');
     expect(secondary.stream).toHaveBeenCalledTimes(1);
-  });
 
-  it('mantém o texto parcial e não troca depois do primeiro token', async () => {
+    redis.values.clear();
+
     primary.stream.mockImplementationOnce(
       (
         _request: AiProviderRequest,
@@ -597,16 +597,16 @@ describe('AiService com failover', () => {
       },
     );
 
-    const reply = await service.generateCoachReplyStream(
+    const partial = await service.generateCoachReplyStream(
       'Prompt',
       [],
       'oi',
       () => undefined,
     );
 
-    expect(reply?.text).toBe('Texto parcial');
-    expect(secondary.stream).not.toHaveBeenCalled();
-    expect(redis.set).toHaveBeenCalledWith(PRIMARY_KEY, expect.any(String), 60);
+    expect(partial?.text).toBe('Texto parcial');
+    expect(secondary.stream).toHaveBeenCalledTimes(1);
+    expect(redis.set).toHaveBeenCalledTimes(2);
   });
 
   it('devolve a falha do fluxo e volta a tentar o principal quando os dois fornecedores falham', async () => {
@@ -678,6 +678,7 @@ describe('AiService com failover', () => {
     primary.isConfigured.mockReturnValue(false);
     secondary.isConfigured.mockReturnValue(false);
 
+    await expect(service.generateInsight('genérico')).resolves.toBeNull();
     await expect(
       service.generateActivityInsight('corrida'),
     ).resolves.toBeNull();

@@ -232,7 +232,9 @@ export class AiService {
     return this.provider.isConfigured();
   }
 
-  async generateInsight(data: string) {
+  async generateInsight(data: string): Promise<string | null> {
+    if (!this.isConfigured()) return null;
+
     const { text } = await this.invokeRouted('generic', 0, [
       {
         role: 'system',
@@ -311,9 +313,7 @@ export class AiService {
         if (retry !== null) return retry;
       }
 
-      return full.trim()
-        ? { ...splitCoachReply(full), provider: failed ?? undefined }
-        : null;
+      return full.trim() ? this.partialReply(full, failed) : null;
     }
   }
 
@@ -336,12 +336,7 @@ export class AiService {
         'Erro ao gerar resposta do coach (fallback premium):',
         (err as Error).message,
       );
-      return full.trim()
-        ? {
-            ...splitCoachReply(full),
-            provider: this.providerOf(err) ?? undefined,
-          }
-        : null;
+      return full.trim() ? this.partialReply(full, this.providerOf(err)) : null;
     }
   }
 
@@ -547,6 +542,13 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
     console.info(
       `[ai] task=${task} tier=${decision.tier} model=${decision.model} provider=${provider} usage=${JSON.stringify(usage)}`,
     );
+  }
+
+  private partialReply(
+    text: string,
+    provider: AiProviderName | null,
+  ): CoachReplyResult {
+    return { ...splitCoachReply(text), provider: provider ?? undefined };
   }
 
   private providerOf(err: unknown): AiProviderName | null {
