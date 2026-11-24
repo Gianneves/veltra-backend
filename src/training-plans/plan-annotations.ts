@@ -35,6 +35,10 @@ interface BuildPlanAnnotationsOptions {
   weekOneNotes?: Array<string | undefined>;
 }
 
+function weekKey(weekStart: string): string {
+  return weekStart.slice(0, 10);
+}
+
 /**
  * Monta as atualizações de anotação de um plano revisado pela IA.
  *
@@ -51,7 +55,7 @@ export function buildPlanAnnotations({
 
   for (const week of review.weeks) {
     const index = plans.findIndex(
-      (plan) => plan.weekStart.slice(0, 10) === week.weekStart.slice(0, 10),
+      (plan) => weekKey(plan.weekStart) === weekKey(week.weekStart),
     );
     if (index < 0) continue;
 
@@ -81,11 +85,11 @@ export function buildPlanAnnotations({
         week.tips.find((t) => t.day === session.day) ?? week.tips[position];
       if (!tip?.text) return;
 
-      const base = session.notes ?? '';
+      const existingNotes = session.notes ?? '';
       result.sessions.push({
         sessionId: session.id,
         patch: {
-          notes: `${base} Dica do Coach: ${tip.text}`.slice(
+          notes: `${existingNotes} Dica do Coach: ${tip.text}`.slice(
             0,
             SESSION_NOTES_MAX_LENGTH,
           ),
