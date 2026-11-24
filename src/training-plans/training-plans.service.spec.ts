@@ -7,6 +7,7 @@ import type { Activity } from 'src/activities/entities/activity.entity';
 import type { AthleteProfile } from './athlete-profile.service';
 import { TrainingPlan } from './entities/training-plan.entity';
 import { TrainingSession } from './entities/training-session.entity';
+import type { PlanReview } from 'src/ai/ai.service';
 
 let planCounter = 0;
 let sessionCounter = 0;
@@ -164,7 +165,9 @@ function createMocks(profile: AthleteProfile) {
   };
 
   const aiService = {
-    generatePlanReview: jest.fn(() => Promise.resolve(null)),
+    generatePlanReview: jest.fn(
+      (): Promise<PlanReview | null> => Promise.resolve(null),
+    ),
   };
 
   const activityMatcher = {
@@ -189,6 +192,7 @@ function createMocks(profile: AthleteProfile) {
     planRepository,
     sessionRepository,
     athleteProfileService,
+    aiService,
   };
 }
 
@@ -229,6 +233,14 @@ function allCoachNotes(planRepository: {
     .join('\n');
 }
 
+function planFocusUpdates(planRepository: { update: jest.Mock }) {
+  const calls = planRepository.update.mock.calls as Array<
+    [string, { focus?: string; coachNotes?: string }]
+  >;
+
+  return calls.filter(([, patch]) => 'focus' in patch);
+}
+
 function weekVolume(plan: TrainingPlan): number {
   return (plan.sessions ?? [])
     .filter((s) => s.type !== 'rest' && s.type !== 'race')
@@ -237,6 +249,22 @@ function weekVolume(plan: TrainingPlan): number {
 
 function allSessions(plans: TrainingPlan[]): TrainingSession[] {
   return plans.flatMap((p) => p.sessions ?? []);
+}
+
+function planState(plans: TrainingPlan[]) {
+  return plans.flatMap((plan) =>
+    (plan.sessions ?? []).map((session) => ({
+      id: session.id,
+      planId: session.planId,
+      day: session.day,
+      dayOrder: session.dayOrder,
+      type: session.type,
+      plannedDistance: session.plannedDistance,
+      plannedPace: session.plannedPace,
+      completed: session.completed,
+      notes: session.notes,
+    })),
+  );
 }
 
 describe('resolvePhase', () => {
@@ -941,6 +969,100 @@ describe('TrainingPlansService', () => {
       'Sem corridas nas últimas 3 semanas',
     );
     expect(sessions.length).toBeGreaterThan(0);
+  });
+
+  it('aplica foco, notas do plano e dicas sem mudar distância, pace, dia, tipo ou conclusão', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    try {
+      const mocks = createMocks(makeProfile());
+      let resolveReview!: (review: PlanReview | null) => void;
+      mocks.aiService.generatePlanReview.mockReturnValue(
+        new Promise<PlanReview | null>((resolve) => {
+          resolveReview = resolve;
+        }),
+      );
+
+      const { plans } = await mocks.service.regenerateFromGoal(makeGoal(), {
+        startDate: START,
+      });
+      const before = planState(plans);
+      const plan = plans[0];
+      const session = (plan.sessions ?? []).find((s) => s.type !== 'rest');
+
+      resolveReview({
+        overview: 'Estratégia da preparação.',
+        weeks: [
+          {
+            weekStart: plan.weekStart.slice(0, 10),
+            focus: 'Foco da semana',
+            rationale: 'Justificativa da semana.',
+            tips: [{ day: session!.day, text: 'Mantenha o pace leve.' }],
+          },
+        ],
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const planUpdates = planFocusUpdates(mocks.planRepository);
+      expect(planUpdates).toEqual([
+        [
+          plan.id,
+          {
+            focus: 'Foco da semana',
+            coachNotes: 'Estratégia da preparação.\n\nJustificativa da semana.',
+          },
+        ],
+      ]);
+
+      expect(mocks.sessionRepository.update).toHaveBeenCalledTimes(1);
+      expect(mocks.sessionRepository.update).toHaveBeenCalledWith(session!.id, {
+        notes: `${session!.notes ?? ''} Dica do Coach: Mantenha o pace leve.`,
+      });
+      expect(planState(plans)).toEqual(before);
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it('não grava anotação quando a IA não devolve revisão', async () => {
+    const withoutKey = createMocks(makeProfile());
+    const { plans } = await withoutKey.service.regenerateFromGoal(makeGoal(), {
+      startDate: START,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(withoutKey.aiService.generatePlanReview).not.toHaveBeenCalled();
+    expect(withoutKey.sessionRepository.update).not.toHaveBeenCalled();
+    expect(planFocusUpdates(withoutKey.planRepository)).toHaveLength(0);
+    expect(plans.length).toBeGreaterThan(0);
+
+    process.env.OPENAI_API_KEY = 'test-key';
+    try {
+      const withNullReview = createMocks(makeProfile());
+      let resolveReview!: (review: PlanReview | null) => void;
+      withNullReview.aiService.generatePlanReview.mockReturnValue(
+        new Promise<PlanReview | null>((resolve) => {
+          resolveReview = resolve;
+        }),
+      );
+
+      const second = await withNullReview.service.regenerateFromGoal(
+        makeGoal(),
+        { startDate: START },
+      );
+      const before = planState(second.plans);
+
+      resolveReview(null);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(withNullReview.aiService.generatePlanReview).toHaveBeenCalledTimes(
+        1,
+      );
+      expect(withNullReview.sessionRepository.update).not.toHaveBeenCalled();
+      expect(planFocusUpdates(withNullReview.planRepository)).toHaveLength(0);
+      expect(planState(second.plans)).toEqual(before);
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
   });
 });
 
