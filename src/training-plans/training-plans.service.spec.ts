@@ -165,6 +165,7 @@ function createMocks(profile: AthleteProfile) {
   };
 
   const aiService = {
+    isConfigured: jest.fn(() => true),
     generatePlanReview: jest.fn(
       (): Promise<PlanReview | null> => Promise.resolve(null),
     ),
@@ -972,97 +973,98 @@ describe('TrainingPlansService', () => {
   });
 
   it('aplica foco, notas do plano e dicas sem mudar distância, pace, dia, tipo ou conclusão', async () => {
-    process.env.OPENAI_API_KEY = 'test-key';
-    try {
-      const mocks = createMocks(makeProfile());
-      let resolveReview!: (review: PlanReview | null) => void;
-      mocks.aiService.generatePlanReview.mockReturnValue(
-        new Promise<PlanReview | null>((resolve) => {
-          resolveReview = resolve;
-        }),
-      );
+    const mocks = createMocks(makeProfile());
+    let resolveReview!: (review: PlanReview | null) => void;
+    mocks.aiService.generatePlanReview.mockReturnValue(
+      new Promise<PlanReview | null>((resolve) => {
+        resolveReview = resolve;
+      }),
+    );
 
-      const { plans } = await mocks.service.regenerateFromGoal(makeGoal(), {
-        startDate: START,
-      });
-      const before = planState(plans);
-      const plan = plans[0];
-      const session = (plan.sessions ?? []).find((s) => s.type !== 'rest');
+    const { plans } = await mocks.service.regenerateFromGoal(makeGoal(), {
+      startDate: START,
+    });
+    const before = planState(plans);
+    const plan = plans[0];
+    const session = (plan.sessions ?? []).find((s) => s.type !== 'rest');
 
-      resolveReview({
-        overview: 'Estratégia da preparação.',
-        weeks: [
-          {
-            weekStart: plan.weekStart.slice(0, 10),
-            focus: 'Foco da semana',
-            rationale: 'Justificativa da semana.',
-            tips: [{ day: session!.day, text: 'Mantenha o pace leve.' }],
-          },
-        ],
-      });
-      await new Promise((resolve) => setImmediate(resolve));
+    resolveReview({
+      overview: 'Estratégia da preparação.',
+      weeks: [
+        {
+          weekStart: plan.weekStart.slice(0, 10),
+          focus: 'Foco da semana',
+          rationale: 'Justificativa da semana.',
+          tips: [{ day: session!.day, text: 'Mantenha o pace leve.' }],
+        },
+      ],
+    });
+    await new Promise((resolve) => setImmediate(resolve));
 
-      const planUpdates = planFocusUpdates(mocks.planRepository);
-      expect(planUpdates).toEqual([
-        [
-          plan.id,
-          {
-            focus: 'Foco da semana',
-            coachNotes: 'Estratégia da preparação.\n\nJustificativa da semana.',
-          },
-        ],
-      ]);
+    const planUpdates = planFocusUpdates(mocks.planRepository);
+    expect(planUpdates).toEqual([
+      [
+        plan.id,
+        {
+          focus: 'Foco da semana',
+          coachNotes: 'Estratégia da preparação.\n\nJustificativa da semana.',
+        },
+      ],
+    ]);
 
-      expect(mocks.sessionRepository.update).toHaveBeenCalledTimes(1);
-      expect(mocks.sessionRepository.update).toHaveBeenCalledWith(session!.id, {
-        notes: `${session!.notes ?? ''} Dica do Coach: Mantenha o pace leve.`,
-      });
-      expect(planState(plans)).toEqual(before);
-    } finally {
-      delete process.env.OPENAI_API_KEY;
-    }
+    expect(mocks.sessionRepository.update).toHaveBeenCalledTimes(1);
+    expect(mocks.sessionRepository.update).toHaveBeenCalledWith(session!.id, {
+      notes: `${session!.notes ?? ''} Dica do Coach: Mantenha o pace leve.`,
+    });
+    expect(planState(plans)).toEqual(before);
+  });
+
+  it('gera a revisão com fornecedor configurado e sem OPENAI_API_KEY', async () => {
+    delete process.env.OPENAI_API_KEY;
+
+    const mocks = createMocks(makeProfile());
+    await mocks.service.regenerateFromGoal(makeGoal(), { startDate: START });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(mocks.aiService.isConfigured).toHaveBeenCalled();
+    expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(1);
   });
 
   it('não grava anotação quando a IA não devolve revisão', async () => {
-    const withoutKey = createMocks(makeProfile());
-    const { plans } = await withoutKey.service.regenerateFromGoal(makeGoal(), {
+    const withoutAi = createMocks(makeProfile());
+    withoutAi.aiService.isConfigured.mockReturnValue(false);
+    const { plans } = await withoutAi.service.regenerateFromGoal(makeGoal(), {
       startDate: START,
     });
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(withoutKey.aiService.generatePlanReview).not.toHaveBeenCalled();
-    expect(withoutKey.sessionRepository.update).not.toHaveBeenCalled();
-    expect(planFocusUpdates(withoutKey.planRepository)).toHaveLength(0);
+    expect(withoutAi.aiService.generatePlanReview).not.toHaveBeenCalled();
+    expect(withoutAi.sessionRepository.update).not.toHaveBeenCalled();
+    expect(planFocusUpdates(withoutAi.planRepository)).toHaveLength(0);
     expect(plans.length).toBeGreaterThan(0);
 
-    process.env.OPENAI_API_KEY = 'test-key';
-    try {
-      const withNullReview = createMocks(makeProfile());
-      let resolveReview!: (review: PlanReview | null) => void;
-      withNullReview.aiService.generatePlanReview.mockReturnValue(
-        new Promise<PlanReview | null>((resolve) => {
-          resolveReview = resolve;
-        }),
-      );
+    const withNullReview = createMocks(makeProfile());
+    let resolveReview!: (review: PlanReview | null) => void;
+    withNullReview.aiService.generatePlanReview.mockReturnValue(
+      new Promise<PlanReview | null>((resolve) => {
+        resolveReview = resolve;
+      }),
+    );
 
-      const second = await withNullReview.service.regenerateFromGoal(
-        makeGoal(),
-        { startDate: START },
-      );
-      const before = planState(second.plans);
+    const second = await withNullReview.service.regenerateFromGoal(makeGoal(), {
+      startDate: START,
+    });
+    const before = planState(second.plans);
 
-      resolveReview(null);
-      await new Promise((resolve) => setImmediate(resolve));
+    resolveReview(null);
+    await new Promise((resolve) => setImmediate(resolve));
 
-      expect(withNullReview.aiService.generatePlanReview).toHaveBeenCalledTimes(
-        1,
-      );
-      expect(withNullReview.sessionRepository.update).not.toHaveBeenCalled();
-      expect(planFocusUpdates(withNullReview.planRepository)).toHaveLength(0);
-      expect(planState(second.plans)).toEqual(before);
-    } finally {
-      delete process.env.OPENAI_API_KEY;
-    }
+    expect(withNullReview.aiService.generatePlanReview).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(withNullReview.sessionRepository.update).not.toHaveBeenCalled();
+    expect(planFocusUpdates(withNullReview.planRepository)).toHaveLength(0);
+    expect(planState(second.plans)).toEqual(before);
   });
 });
 

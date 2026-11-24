@@ -203,6 +203,22 @@ describe('CoachService', () => {
     expect(updateArgs[1].updatedAt).toBeInstanceOf(Date);
   });
 
+  it('responde em pt-BR quando a IA não devolve resposta', async () => {
+    aiService.generateCoachReplyStream.mockResolvedValue(null);
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como estou indo?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(result.message.content).toBe(
+      'Desculpe, não consegui responder agora. Tente novamente.',
+    );
+    expect(messageRepository.save).toHaveBeenCalledTimes(2);
+  });
+
   it('accepts a cautious proposal for a future session', async () => {
     aiService.generateCoachReplyStream.mockResolvedValue({
       text: 'Sugiro ajustar.',

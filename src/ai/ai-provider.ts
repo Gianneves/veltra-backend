@@ -21,17 +21,24 @@ export interface AiProviderRequest {
   routing: RoutingSignals;
 }
 
+export type AiProviderName = 'openai' | 'deepseek';
+
 export interface AiProviderResult {
   text: string;
   decision: ModelDecision;
   usage: unknown;
+  provider: AiProviderName;
 }
 
-export type AiProviderFailureReason = 'http' | 'transport' | 'timeout';
+export type AiProviderFailureReason =
+  | 'http'
+  | 'transport'
+  | 'timeout'
+  | 'empty';
 
 export class AiProviderUnavailableError extends Error {
   constructor(
-    readonly provider: string,
+    readonly provider: AiProviderName,
     readonly reason: AiProviderFailureReason,
     readonly status?: number,
     readonly cause?: unknown,
@@ -59,5 +66,7 @@ export abstract class AiProvider {
     onToken: (token: string) => void,
   ): Promise<AiProviderResult>;
 
-  abstract canEscalate(): boolean;
+  abstract canEscalate(provider: AiProviderName): boolean;
+
+  abstract isConfigured(): boolean;
 }

@@ -3,10 +3,15 @@ import { AiService, splitCoachReply } from './ai.service';
 import {
   AiProvider,
   AiProviderUnavailableError,
+  type AiProviderName,
   type AiProviderRequest,
   type AiProviderResult,
 } from './ai-provider';
+import { AiFailoverService } from './ai-failover.service';
+import { AiProviderStateService } from './ai-provider-state.service';
+import { DeepSeekProvider } from './deepseek-provider';
 import { OpenAiProvider } from './openai-provider';
+import type { RedisService } from 'src/redis/redis.service';
 import type { AiTier, AiTask, ModelDecision } from './model-router';
 
 type FakeProvider = {
@@ -16,7 +21,8 @@ type FakeProvider = {
     Promise<AiProviderResult>,
     [AiProviderRequest, AiTier, (token: string) => void]
   >;
-  canEscalate: jest.Mock<boolean, []>;
+  canEscalate: jest.Mock<boolean, [AiProviderName]>;
+  isConfigured: jest.Mock<boolean, []>;
 };
 
 const INSIGHT_JSON = JSON.stringify({
@@ -41,7 +47,11 @@ const PLAN_REVIEW_JSON = JSON.stringify({
 
 const MATCH_JSON = JSON.stringify({ sessionId: 'session-1', reason: 'ok' });
 
-function result(text: string, tier: AiTier = 'cheap'): AiProviderResult {
+function result(
+  text: string,
+  tier: AiTier = 'cheap',
+  provider: AiProviderName = 'openai',
+): AiProviderResult {
   return {
     text,
     decision: {
@@ -50,6 +60,7 @@ function result(text: string, tier: AiTier = 'cheap'): AiProviderResult {
       reason: 'test',
     },
     usage: { total_tokens: 1 },
+    provider,
   };
 }
 
@@ -110,6 +121,7 @@ describe('AiService', () => {
         },
       ),
       canEscalate: jest.fn(() => true),
+      isConfigured: jest.fn(() => true),
     };
     openAi = { createEmbedding: jest.fn(() => Promise.resolve([0.1, 0.2])) };
 
@@ -338,6 +350,363 @@ describe('AiService', () => {
     expect(provider.decide).not.toHaveBeenCalled();
     expect(provider.complete).not.toHaveBeenCalled();
     expect(provider.stream).not.toHaveBeenCalled();
+  });
+});
+
+describe('AiService com failover', () => {
+  const PRIMARY_KEY = 'ai:provider:primary:down';
+  const originalDeepSeek = process.env.DEEPSEEK_API_KEY;
+  const originalCooldown = process.env.AI_FAILOVER_COOLDOWN_SECONDS;
+
+  let primary: FakeProvider;
+  let secondary: FakeProvider;
+  let redis: {
+    values: Map<string, string>;
+    get: jest.Mock;
+    set: jest.Mock;
+    del: jest.Mock;
+  };
+  let service: AiService;
+
+  function providerDouble(provider: AiProviderName): FakeProvider {
+    return {
+      decide: jest.fn(() => ({
+        tier: 'cheap' as const,
+        model: provider === 'openai' ? 'gpt-4o-mini' : 'deepseek-chat',
+        reason: 'test',
+      })),
+      complete: jest.fn((request: AiProviderRequest) =>
+        Promise.resolve(result(textForTask(request.task), 'cheap', provider)),
+      ),
+      stream: jest.fn(
+        (
+          request: AiProviderRequest,
+          tier: AiTier,
+          onToken: (token: string) => void,
+        ) => {
+          const text = textForTask(request.task);
+          onToken(text);
+          return Promise.resolve(result(text, tier, provider));
+        },
+      ),
+      canEscalate: jest.fn(() => provider === 'openai'),
+      isConfigured: jest.fn(() => true),
+    };
+  }
+
+  function fakeRedis() {
+    const values = new Map<string, string>();
+    return {
+      values,
+      get: jest.fn((key: string) => Promise.resolve(values.get(key) ?? null)),
+      set: jest.fn((key: string, value: string) => {
+        values.set(key, value);
+        return Promise.resolve();
+      }),
+      del: jest.fn((key: string) => {
+        values.delete(key);
+        return Promise.resolve();
+      }),
+    };
+  }
+
+  beforeEach(() => {
+    delete process.env.DEEPSEEK_API_KEY;
+    delete process.env.AI_FAILOVER_COOLDOWN_SECONDS;
+
+    primary = providerDouble('openai');
+    secondary = providerDouble('deepseek');
+    redis = fakeRedis();
+
+    const state = new AiProviderStateService(redis as unknown as RedisService);
+    const failover = new AiFailoverService(
+      primary as unknown as OpenAiProvider,
+      secondary as unknown as DeepSeekProvider,
+      state,
+    );
+    service = new AiService(failover, {
+      createEmbedding: jest.fn(() => Promise.resolve([])),
+    } as unknown as OpenAiProvider);
+  });
+
+  afterEach(() => {
+    if (originalDeepSeek === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalDeepSeek;
+
+    if (originalCooldown === undefined)
+      delete process.env.AI_FAILOVER_COOLDOWN_SECONDS;
+    else process.env.AI_FAILOVER_COOLDOWN_SECONDS = originalCooldown;
+  });
+
+  it('atende pelo alternativo quando o principal falha, em cada caminho de texto', async () => {
+    primary.complete.mockRejectedValue(
+      new AiProviderUnavailableError('openai', 'http', 402),
+    );
+    primary.stream.mockRejectedValue(
+      new AiProviderUnavailableError('openai', 'http', 402),
+    );
+
+    await expect(service.generateInsight('genérico')).resolves.toBe(
+      'Texto genérico',
+    );
+    expect((await service.generateActivityInsight('corrida'))?.summary).toBe(
+      'Resumo',
+    );
+    expect((await service.generatePlanReview('plano'))?.overview).toBe(
+      'Visão geral',
+    );
+    expect((await service.classifyActivityMatch('pareamento'))?.sessionId).toBe(
+      'session-1',
+    );
+    const reply = await service.generateCoachReplyStream(
+      'Prompt',
+      [],
+      'oi',
+      () => undefined,
+    );
+
+    expect(reply?.text).toBe('Resposta do coach');
+    expect(reply?.provider).toBe('deepseek');
+    expect(secondary.complete).toHaveBeenCalledTimes(4);
+    expect(secondary.stream).toHaveBeenCalledTimes(1);
+  });
+
+  it('troca de fornecedor quando a resposta sem streaming vem vazia', async () => {
+    primary.complete.mockResolvedValue(result('   '));
+
+    expect((await service.generateActivityInsight('corrida'))?.summary).toBe(
+      'Resumo',
+    );
+    expect(secondary.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('não troca de fornecedor em HTTP fora da lista', async () => {
+    primary.complete.mockRejectedValue(
+      new AiProviderUnavailableError('openai', 'http', 400),
+    );
+
+    await expect(
+      service.generateActivityInsight('corrida'),
+    ).resolves.toBeNull();
+    expect(secondary.complete).not.toHaveBeenCalled();
+  });
+
+  it('vai direto ao alternativo dentro do cooldown e sonda o principal depois do prazo', async () => {
+    primary.complete.mockRejectedValueOnce(
+      new AiProviderUnavailableError('openai', 'http', 402),
+    );
+
+    await service.generateActivityInsight('corrida');
+
+    expect(redis.set).toHaveBeenCalledTimes(1);
+    const [key, value, ttl] = redis.set.mock.calls[0] as [
+      string,
+      string,
+      number,
+    ];
+    expect(key).toBe(PRIMARY_KEY);
+    expect(ttl).toBe(60);
+    const until = Number(value);
+    expect(until).toBeGreaterThan(Date.now());
+    expect(until).toBeLessThanOrEqual(Date.now() + 60_000);
+
+    await service.generateActivityInsight('corrida');
+    expect(primary.complete).toHaveBeenCalledTimes(1);
+    expect(secondary.complete).toHaveBeenCalledTimes(2);
+
+    redis.values.set(PRIMARY_KEY, String(Date.now() - 1));
+    primary.complete.mockResolvedValueOnce(result(INSIGHT_JSON));
+
+    await service.generateActivityInsight('corrida');
+
+    expect(primary.complete).toHaveBeenCalledTimes(2);
+    expect(secondary.complete).toHaveBeenCalledTimes(2);
+    expect(redis.del).toHaveBeenCalledWith(PRIMARY_KEY);
+  });
+
+  it('renova a marca quando a sonda falha', async () => {
+    primary.complete
+      .mockRejectedValueOnce(
+        new AiProviderUnavailableError('openai', 'http', 402),
+      )
+      .mockRejectedValueOnce(
+        new AiProviderUnavailableError('openai', 'http', 500),
+      );
+
+    await service.generateActivityInsight('corrida');
+    redis.values.set(PRIMARY_KEY, String(Date.now() - 1));
+    await service.generateActivityInsight('corrida');
+
+    expect(redis.set).toHaveBeenCalledTimes(2);
+    expect(secondary.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('escala para o premium no principal quando o cheap não passa no parser', async () => {
+    primary.complete
+      .mockResolvedValueOnce(result('não é json'))
+      .mockResolvedValueOnce(result(INSIGHT_JSON, 'premium'));
+
+    const content = await service.generateActivityInsight('corrida');
+
+    expect(content?.summary).toBe('Resumo');
+    expect(primary.complete).toHaveBeenCalledTimes(2);
+    expect(primary.complete.mock.calls[1][1]).toBe('premium');
+    expect(secondary.complete).not.toHaveBeenCalled();
+  });
+
+  it('não escala no alternativo quando o texto não passa no parser', async () => {
+    primary.complete.mockRejectedValue(
+      new AiProviderUnavailableError('openai', 'http', 402),
+    );
+    secondary.complete.mockResolvedValue(
+      result('não é json', 'cheap', 'deepseek'),
+    );
+
+    await expect(
+      service.generateActivityInsight('corrida'),
+    ).resolves.toBeNull();
+    expect(secondary.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('troca de fornecedor no streaming só antes do primeiro token', async () => {
+    primary.stream.mockRejectedValueOnce(
+      new AiProviderUnavailableError('openai', 'transport'),
+    );
+
+    const switched = await service.generateCoachReplyStream(
+      'Prompt',
+      [],
+      'oi',
+      () => undefined,
+    );
+
+    expect(switched?.text).toBe('Resposta do coach');
+    expect(switched?.provider).toBe('deepseek');
+    expect(secondary.stream).toHaveBeenCalledTimes(1);
+
+    redis.values.clear();
+
+    primary.stream.mockImplementationOnce(
+      (
+        _request: AiProviderRequest,
+        _tier: AiTier,
+        onToken: (token: string) => void,
+      ) => {
+        onToken('Texto parcial');
+        throw new AiProviderUnavailableError('openai', 'transport');
+      },
+    );
+
+    const partial = await service.generateCoachReplyStream(
+      'Prompt',
+      [],
+      'oi',
+      () => undefined,
+    );
+
+    expect(partial?.text).toBe('Texto parcial');
+    expect(secondary.stream).toHaveBeenCalledTimes(1);
+    expect(redis.set).toHaveBeenCalledTimes(2);
+  });
+
+  it('devolve a falha do fluxo e volta a tentar o principal quando os dois fornecedores falham', async () => {
+    primary.complete.mockRejectedValue(
+      new AiProviderUnavailableError('openai', 'http', 402),
+    );
+    secondary.complete.mockRejectedValue(
+      new AiProviderUnavailableError('deepseek', 'http', 429),
+    );
+
+    await expect(
+      service.generateActivityInsight('corrida'),
+    ).resolves.toBeNull();
+    expect(redis.del).toHaveBeenCalledWith(PRIMARY_KEY);
+
+    primary.complete.mockResolvedValueOnce(result(INSIGHT_JSON));
+    await service.generateActivityInsight('corrida');
+    expect(primary.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('devolve a falha do chat quando os dois fornecedores falham', async () => {
+    primary.stream.mockRejectedValue(
+      new AiProviderUnavailableError('openai', 'http', 402),
+    );
+    secondary.stream.mockRejectedValue(
+      new AiProviderUnavailableError('deepseek', 'http', 503),
+    );
+
+    const reply = await service.generateCoachReplyStream(
+      'Prompt',
+      [],
+      'oi',
+      () => undefined,
+    );
+
+    expect(reply).toBeNull();
+    expect(redis.del).toHaveBeenCalledWith(PRIMARY_KEY);
+  });
+
+  it('atende pelo alternativo desde a primeira chamada sem a chave do OpenAI', async () => {
+    primary.isConfigured.mockReturnValue(false);
+
+    await expect(service.generateInsight('genérico')).resolves.toBe(
+      'Texto genérico',
+    );
+    expect((await service.generateActivityInsight('corrida'))?.summary).toBe(
+      'Resumo',
+    );
+    expect((await service.generatePlanReview('plano'))?.overview).toBe(
+      'Visão geral',
+    );
+    expect((await service.classifyActivityMatch('pareamento'))?.sessionId).toBe(
+      'session-1',
+    );
+    const reply = await service.generateCoachReplyStream(
+      'Prompt',
+      [],
+      'oi',
+      () => undefined,
+    );
+
+    expect(reply?.provider).toBe('deepseek');
+    expect(primary.complete).not.toHaveBeenCalled();
+    expect(primary.stream).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('segue sem IA quando nenhum fornecedor está configurado', async () => {
+    primary.isConfigured.mockReturnValue(false);
+    secondary.isConfigured.mockReturnValue(false);
+
+    await expect(service.generateInsight('genérico')).resolves.toBeNull();
+    await expect(
+      service.generateActivityInsight('corrida'),
+    ).resolves.toBeNull();
+    await expect(service.generatePlanReview('plano')).resolves.toBeNull();
+    await expect(
+      service.classifyActivityMatch('pareamento'),
+    ).resolves.toBeNull();
+    await expect(
+      service.generateCoachReplyStream('Prompt', [], 'oi', () => undefined),
+    ).resolves.toBeNull();
+
+    expect(service.isConfigured()).toBe(false);
+    expect(secondary.complete).not.toHaveBeenCalled();
+    expect(secondary.stream).not.toHaveBeenCalled();
+  });
+
+  it('continua tentando o principal a cada chamada com o Redis fora', async () => {
+    redis.get.mockRejectedValue(new Error('redis down'));
+    redis.set.mockRejectedValue(new Error('redis down'));
+    primary.complete.mockRejectedValue(
+      new AiProviderUnavailableError('openai', 'http', 402),
+    );
+
+    await service.generateActivityInsight('corrida');
+    await service.generateActivityInsight('corrida');
+
+    expect(primary.complete).toHaveBeenCalledTimes(2);
+    expect(secondary.complete).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -1979,7 +1979,7 @@ export class TrainingPlansService {
     targetNote?: string,
     patternNote?: string,
   ) {
-    if (!process.env.OPENAI_API_KEY || plans.length === 0) return;
+    if (!this.aiService.isConfigured() || plans.length === 0) return;
 
     const pattern = profile.pattern;
 
