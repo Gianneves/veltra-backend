@@ -1,6 +1,5 @@
 import type { PlanReview } from 'src/ai/ai.service';
-import { TrainingPlan } from './entities/training-plan.entity';
-import { TrainingSession } from './entities/training-session.entity';
+import type { TrainingPlan } from './entities/training-plan.entity';
 
 export const PLAN_FOCUS_MAX_LENGTH = 120;
 export const PLAN_COACH_NOTES_MAX_LENGTH = 1200;
@@ -36,20 +35,6 @@ interface BuildPlanAnnotationsOptions {
   weekOneNotes?: Array<string | undefined>;
 }
 
-function buildPlanCoachNotes(
-  index: number,
-  overview: string | undefined,
-  rationale: string | undefined,
-  weekOneNotes: Array<string | undefined>,
-): string | undefined {
-  if (index !== 0) return rationale?.slice(0, PLAN_COACH_NOTES_MAX_LENGTH);
-
-  return [...weekOneNotes, overview, rationale]
-    .filter((part): part is string => !!part)
-    .join('\n\n')
-    .slice(0, PLAN_COACH_NOTES_MAX_LENGTH);
-}
-
 /**
  * Monta as atualizações de anotação de um plano revisado pela IA.
  *
@@ -64,33 +49,36 @@ export function buildPlanAnnotations({
 }: BuildPlanAnnotationsOptions): PlanAnnotations {
   const result: PlanAnnotations = { plans: [], sessions: [] };
 
-  plans.forEach((plan, index) => {
-    const week = review.weeks.find(
-      (candidate) =>
-        candidate.weekStart.slice(0, 10) === plan.weekStart.slice(0, 10),
+  for (const week of review.weeks) {
+    const index = plans.findIndex(
+      (plan) => plan.weekStart.slice(0, 10) === week.weekStart.slice(0, 10),
     );
-    if (!week) return;
+    if (index < 0) continue;
+
+    const plan = plans[index];
+    const isFirstWeek = index === 0;
+
+    const coachNotes = isFirstWeek
+      ? [...weekOneNotes, review.overview, week.rationale]
+          .filter((part): part is string => !!part)
+          .join('\n\n')
+      : week.rationale;
 
     result.plans.push({
       planId: plan.id,
       patch: {
         focus: week.focus?.slice(0, PLAN_FOCUS_MAX_LENGTH),
-        coachNotes: buildPlanCoachNotes(
-          index,
-          review.overview,
-          week.rationale,
-          weekOneNotes,
-        ),
+        coachNotes: coachNotes?.slice(0, PLAN_COACH_NOTES_MAX_LENGTH),
       },
     });
 
     const sessions = [...(plan.sessions ?? [])].sort(
       (a, b) => a.dayOrder - b.dayOrder,
     );
-    const tips = week.tips ?? [];
 
-    sessions.forEach((session: TrainingSession, position: number) => {
-      const tip = tips.find((t) => t.day === session.day) ?? tips[position];
+    sessions.forEach((session, position) => {
+      const tip =
+        week.tips.find((t) => t.day === session.day) ?? week.tips[position];
       if (!tip?.text) return;
 
       const base = session.notes ?? '';
@@ -104,7 +92,7 @@ export function buildPlanAnnotations({
         },
       });
     });
-  });
+  }
 
   return result;
 }

@@ -1032,11 +1032,7 @@ describe('TrainingPlansService', () => {
 
     expect(withoutKey.aiService.generatePlanReview).not.toHaveBeenCalled();
     expect(withoutKey.sessionRepository.update).not.toHaveBeenCalled();
-    expect(
-      withoutKey.planRepository.update.mock.calls.filter(
-        ([, patch]) => 'focus' in patch,
-      ),
-    ).toHaveLength(0);
+    expect(planFocusUpdates(withoutKey.planRepository)).toHaveLength(0);
     expect(plans.length).toBeGreaterThan(0);
 
     process.env.OPENAI_API_KEY = 'test-key';
@@ -1062,11 +1058,7 @@ describe('TrainingPlansService', () => {
         1,
       );
       expect(withNullReview.sessionRepository.update).not.toHaveBeenCalled();
-      expect(
-        withNullReview.planRepository.update.mock.calls.filter(
-          ([, patch]) => 'focus' in patch,
-        ),
-      ).toHaveLength(0);
+      expect(planFocusUpdates(withNullReview.planRepository)).toHaveLength(0);
       expect(planState(second.plans)).toEqual(before);
     } finally {
       delete process.env.OPENAI_API_KEY;
