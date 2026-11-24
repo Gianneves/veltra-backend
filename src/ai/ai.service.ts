@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common';
-import { OpenAIEmbeddings } from '@langchain/openai';
 import {
-  AIMessage,
-  HumanMessage,
-  SystemMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
+  AiProvider,
+  type AiProviderMessage,
+  type AiProviderRequest,
+} from './ai-provider';
+import { OpenAiProvider } from './openai-provider';
 import {
-  AiModelRouter,
+  MAX_TOKENS_BY_TASK,
+  hasHealthSignal,
+  hasPlanChangeIntent,
   type AiTask,
   type ModelDecision,
   type RoutingSignals,
@@ -215,29 +216,24 @@ export function parseActivityInsight(
 
 @Injectable()
 export class AiService {
-  constructor(private readonly modelRouter: AiModelRouter) {}
+  constructor(
+    private readonly provider: AiProvider,
+    private readonly openAi: OpenAiProvider,
+  ) {}
 
   createEmbedding(text: string) {
-    const cleanSpaces = text.replace(/\s+/g, ' ').trim();
-
-    const embeddings = new OpenAIEmbeddings({
-      apiKey: process.env.OPENAI_API_KEY,
-      model: 'text-embedding-3-small',
-    });
-
-    const vector = embeddings.embedQuery(cleanSpaces);
-
-    return vector;
+    return this.openAi.createEmbedding(text);
   }
 
   async generateInsight(data: string) {
-    const systemMsg = new SystemMessage(
-      "You're an experienced running coach, so you need to analyze user data and provide your feedback on it.",
-    );
-    const humanMsg = new HumanMessage(data);
-
-    const messages = [systemMsg, humanMsg];
-    const { text } = await this.invokeRouted('generic', 0, messages);
+    const { text } = await this.invokeRouted('generic', 0, [
+      {
+        role: 'system',
+        content:
+          "You're an experienced running coach, so you need to analyze user data and provide your feedback on it.",
+      },
+      { role: 'user', content: data },
+    ]);
 
     return text;
   }
@@ -255,92 +251,67 @@ export class AiService {
       text: userMessage,
       contextLength: systemPrompt.length,
       historyLength: history.length,
-      wantsPlanChange: this.modelRouter.hasPlanChangeIntent(userMessage),
-      hasHealthSignal: this.modelRouter.hasHealthSignal(userMessage),
+      wantsPlanChange: hasPlanChangeIntent(userMessage),
+      hasHealthSignal: hasHealthSignal(userMessage),
     };
 
-    const messages: BaseMessage[] = [
-      new SystemMessage(systemPrompt),
-      ...history.map((message) =>
-        message.role === 'user'
-          ? new HumanMessage(message.content)
-          : new AIMessage(message.content),
-      ),
-      new HumanMessage(userMessage),
+    const messages: AiProviderMessage[] = [
+      { role: 'system', content: systemPrompt },
+      ...history.map((message) => ({
+        role:
+          message.role === 'user' ? ('user' as const) : ('assistant' as const),
+        content: message.content,
+      })),
+      { role: 'user', content: userMessage },
     ];
 
-    const { runnable, decision } = this.modelRouter.buildRoutedRunnable(
-      signals,
+    const request = this.buildRequest(
+      'coach_reply',
+      messages,
       0.3,
-    );
-
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
       COACH_REPLY_TIMEOUT_MS,
+      signals,
     );
+    const decision = this.provider.decide(request);
 
     let full = '';
-    let usage: unknown;
+    const track = (token: string) => {
+      full += token;
+      onToken(token);
+    };
 
     try {
-      const stream = await runnable.stream(
-        { signals, messages },
-        { signal: controller.signal },
-      );
+      const result = await this.provider.stream(request, decision.tier, track);
 
-      for await (const chunk of stream) {
-        const token = typeof chunk.content === 'string' ? chunk.content : '';
-        if (chunk.usage_metadata) usage = chunk.usage_metadata;
-        if (!token) continue;
-        full += token;
-        onToken(token);
-      }
-
-      this.logUsage('coach_reply', decision, usage);
-      return splitCoachReply(full);
+      this.logUsage('coach_reply', result.decision, result.usage);
+      return splitCoachReply(result.text);
     } catch (err) {
       console.error('Erro ao gerar resposta do coach:', (err as Error).message);
 
       if (
         !full.trim() &&
         decision.tier === 'cheap' &&
-        this.modelRouter.escalationEnabled()
+        this.provider.canEscalate()
       ) {
-        const retry = await this.streamPremiumFallback(messages, onToken);
+        const retry = await this.streamPremiumFallback(request, onToken);
         if (retry !== null) return retry;
       }
 
       return full.trim() ? splitCoachReply(full) : null;
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
   private async streamPremiumFallback(
-    messages: BaseMessage[],
+    request: AiProviderRequest,
     onToken: (token: string) => void,
   ): Promise<CoachReplyResult | null> {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      COACH_REPLY_TIMEOUT_MS,
-    );
-
     let full = '';
 
     try {
-      const llm = this.modelRouter.createModel('premium', 'coach_reply', 0.3);
-      const stream = await llm.stream(messages, {
-        signal: controller.signal,
-      });
-
-      for await (const chunk of stream) {
-        const token = typeof chunk.content === 'string' ? chunk.content : '';
-        if (!token) continue;
+      await this.provider.stream(request, 'premium', (token) => {
         full += token;
         onToken(token);
-      }
+      });
 
       console.info('[ai] task=coach_reply tier=premium reason=fallback');
       return splitCoachReply(full);
@@ -350,8 +321,6 @@ export class AiService {
         (err as Error).message,
       );
       return full.trim() ? splitCoachReply(full) : null;
-    } finally {
-      clearTimeout(timeout);
     }
   }
 
@@ -360,25 +329,27 @@ export class AiService {
   ): Promise<ActivityInsightContent | null> {
     if (!process.env.OPENAI_API_KEY) return null;
 
-    const systemMsg = new SystemMessage(
-      `Você é o Veltra Coach, treinador de corrida experiente. Analise a corrida realizada pelo atleta usando os dados fornecidos.
+    const messages: AiProviderMessage[] = [
+      {
+        role: 'system',
+        content: `Você é o Veltra Coach, treinador de corrida experiente. Analise a corrida realizada pelo atleta usando os dados fornecidos.
 Responda SOMENTE com JSON válido, sem markdown, no formato:
 {"summary":"...","performance":"...","workoutType":"...","plan":"..." ou null,"tips":["..."]}
 Regras: português do Brasil; "summary" com 2 frases resumindo a corrida; "performance" com 2-3 frases sobre pace, distância e esforço (cite frequência cardíaca, cadência ou elevação quando existirem), comparando com o perfil recente do atleta quando disponível; "workoutType" com 1-2 frases explicando o tipo de treino executado (intervalado, tempo run, fartlek, longão ou leve) e sua função no treinamento; "plan" com 2-3 frases avaliando o cumprimento do treino planejado e a aderência informada, ou null se não houver treino planejado vinculado; "tips" com 2 a 4 dicas curtas e práticas para as próximas corridas, cada uma com no máximo 160 caracteres. Seja honesto e construtivo, aponte o que melhorar com cautela e não invente dados que não estão no contexto. Nunca faça diagnóstico médico; se houver faixa etária ou alertas de saúde no contexto, seja cauteloso e recomende acompanhamento profissional quando fizer sentido.`,
-    );
-    const humanMsg = new HumanMessage(context);
+      },
+      { role: 'user', content: context },
+    ];
 
     const result = await this.invokeParsed(
       'activity_insight',
       0.3,
       {
         contextLength: context.length,
-        hasHealthSignal: this.modelRouter.hasHealthSignal(context),
+        hasHealthSignal: hasHealthSignal(context),
       },
-      [systemMsg, humanMsg],
+      messages,
       parseActivityInsight,
       ACTIVITY_INSIGHT_TIMEOUT_MS,
-      'Timeout ao gerar insight da corrida',
       'Erro ao gerar insight da corrida com IA',
     );
 
@@ -388,25 +359,27 @@ Regras: português do Brasil; "summary" com 2 frases resumindo a corrida; "perfo
   async generatePlanReview(context: string): Promise<PlanReview | null> {
     if (!process.env.OPENAI_API_KEY) return null;
 
-    const systemMsg = new SystemMessage(
-      `Você é o Veltra Coach, treinador de corrida experiente. Analise o plano gerado e os dados reais do atleta.
+    const messages: AiProviderMessage[] = [
+      {
+        role: 'system',
+        content: `Você é o Veltra Coach, treinador de corrida experiente. Analise o plano gerado e os dados reais do atleta.
 Responda SOMENTE com JSON válido, sem markdown, no formato:
 {"overview":"...","weeks":[{"weekStart":"YYYY-MM-DD","focus":"...","rationale":"...","tips":[{"dia":"Seg","dica":"..."}]}]}
 Regras: português do Brasil; "overview" com 2-3 frases resumindo a estratégia; "focus" com no máximo 8 palavras; "rationale" com 2-3 frases citando os dados do atleta (volume, longão, paces); se houver "tempoAlvo" nos dados, comente na "rationale" da primeira semana se a meta é conservadora, realista, agressiva ou improvável, citando o tempo projetado; se houver "historicoDoAtleta", use-o para citar a rotina real (dias de qualidade, longão, tipos de treino e paces que o atleta costuma fazer) e explique como o plano se aproxima dela; seja crítico e realista: se o volume ou a intensidade subirem rápido demais para o histórico, avise, e se houver "ajusteAplicado" comente o motivo; se houver "idade" e "limitePorIdade" nos dados, respeite e explique os limites de segurança; se houver "ultimas3Semanas" e "teste3Km", cite que o plano foi calibrado por eles (e por "baseDoPlano"), sem inventar dados; nunca faça diagnóstico médico; "tips" com uma dica prática para cada dia listado, usando exatamente a mesma abreviação de "dia" (Dom, Seg, Ter, Qua, Qui, Sex, Sáb), com no máximo 140 caracteres cada. Use exatamente os mesmos weekStart das semanas fornecidas.`,
-    );
-    const humanMsg = new HumanMessage(context);
+      },
+      { role: 'user', content: context },
+    ];
 
     return this.invokeParsed(
       'plan_review',
       0.2,
       {
         contextLength: context.length,
-        hasHealthSignal: this.modelRouter.hasHealthSignal(context),
+        hasHealthSignal: hasHealthSignal(context),
       },
-      [systemMsg, humanMsg],
+      messages,
       (text) => this.parsePlanReview(text),
       PLAN_REVIEW_TIMEOUT_MS,
-      'Timeout ao gerar análise do plano',
       'Erro ao gerar análise do plano com IA',
     );
   }
@@ -416,22 +389,24 @@ Regras: português do Brasil; "overview" com 2-3 frases resumindo a estratégia;
   ): Promise<{ sessionId: string; reason?: string } | null> {
     if (!process.env.OPENAI_API_KEY) return null;
 
-    const systemMsg = new SystemMessage(
-      `Você é o Veltra Coach. Dada uma atividade realizada e candidatos de treino planejado, decida qual treino a atividade representa.
+    const messages: AiProviderMessage[] = [
+      {
+        role: 'system',
+        content: `Você é o Veltra Coach. Dada uma atividade realizada e candidatos de treino planejado, decida qual treino a atividade representa.
 Responda SOMENTE com JSON válido, sem markdown, no formato:
 {"sessionId":"<id do candidato ou null>","confidence":0.0,"reason":"..."}
 Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com maior "score", só escolhendo outro com motivo claro; se nenhum candidato corresponder claramente, retorne "sessionId": null; "reason" com no máximo 120 caracteres em português do Brasil. Leve em conta formato do treino (intervalado, longão, tempo, leve), distância, pace, dia e nome da atividade.`,
-    );
-    const humanMsg = new HumanMessage(context);
+      },
+      { role: 'user', content: context },
+    ];
 
     return this.invokeParsed(
       'activity_match',
       0,
       { contextLength: context.length },
-      [systemMsg, humanMsg],
+      messages,
       (text) => this.parseActivityMatch(text),
       ACTIVITY_MATCH_TIMEOUT_MS,
-      'Timeout ao classificar atividade',
       'Erro ao classificar atividade com IA',
     );
   }
@@ -463,99 +438,70 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
   private async invokeRouted(
     task: AiTask,
     temperature: number,
-    messages: BaseMessage[],
+    messages: AiProviderMessage[],
   ): Promise<{ text: string; decision: ModelDecision }> {
-    const signals: RoutingSignals = { task };
-    const { runnable, decision } = this.modelRouter.buildRoutedRunnable(
-      signals,
-      temperature,
-    );
+    const request = this.buildRequest(task, messages, temperature, 0);
+    const decision = this.provider.decide(request);
+    const response = await this.provider.complete(request, decision.tier);
 
-    const response = await runnable.invoke({ signals, messages });
-    this.logUsage(task, decision, response.usage_metadata);
+    this.logUsage(task, response.decision, response.usage);
 
-    return { text: this.messageText(response), decision };
+    return { text: response.text, decision: response.decision };
   }
 
   private async invokeParsed<T>(
     task: AiTask,
     temperature: number,
     signals: Omit<RoutingSignals, 'task'>,
-    messages: BaseMessage[],
+    messages: AiProviderMessage[],
     parse: (text: string) => T | null,
     timeoutMs: number,
-    timeoutMessage: string,
     errorMessage: string,
   ): Promise<T | null> {
-    const routingSignals: RoutingSignals = { task, ...signals };
-    const { runnable, decision } = this.modelRouter.buildRoutedRunnable(
-      routingSignals,
-      temperature,
-    );
+    const request = this.buildRequest(task, messages, temperature, timeoutMs, {
+      task,
+      ...signals,
+    });
+    const decision = this.provider.decide(request);
 
     try {
-      const response = await this.withTimeout(
-        runnable.invoke({ signals: routingSignals, messages }),
-        timeoutMs,
-        timeoutMessage,
-      );
+      const response = await this.provider.complete(request, decision.tier);
 
-      this.logUsage(task, decision, response.usage_metadata);
-      const parsed = parse(this.messageText(response));
+      this.logUsage(task, response.decision, response.usage);
+      const parsed = parse(response.text);
       if (parsed !== null) return parsed;
 
-      if (decision.tier !== 'cheap' || !this.modelRouter.escalationEnabled()) {
+      if (decision.tier !== 'cheap' || !this.provider.canEscalate()) {
         return null;
       }
 
       console.info(`[ai] task=${task} tier=premium reason=parse_escalation`);
-      const premium = this.modelRouter.createModel(
-        'premium',
-        task,
-        temperature,
-      );
-      const retry = await this.withTimeout(
-        premium.invoke(messages),
-        timeoutMs,
-        timeoutMessage,
-      );
+      const retry = await this.provider.complete(request, 'premium');
 
-      this.logUsage(
-        task,
-        {
-          tier: 'premium',
-          model: this.modelRouter.modelName('premium'),
-          reason: 'parse_escalation',
-        },
-        retry.usage_metadata,
-      );
+      this.logUsage(task, retry.decision, retry.usage);
 
-      return parse(this.messageText(retry));
+      return parse(retry.text);
     } catch (err) {
       console.error(`${errorMessage}:`, (err as Error).message);
       return null;
     }
   }
 
-  private withTimeout<T>(
-    promise: Promise<T>,
+  private buildRequest(
+    task: AiTask,
+    messages: AiProviderMessage[],
+    temperature: number,
     timeoutMs: number,
-    message: string,
-  ): Promise<T> {
-    if (timeoutMs <= 0) return promise;
-
-    return Promise.race([
-      promise,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(message)), timeoutMs),
-      ),
-    ]);
-  }
-
-  private messageText(response: { content: unknown }): string {
-    return typeof response.content === 'string'
-      ? response.content
-      : JSON.stringify(response.content);
+    routing: RoutingSignals = { task },
+  ): AiProviderRequest {
+    return {
+      task,
+      messages,
+      temperature,
+      maxTokens: MAX_TOKENS_BY_TASK[task],
+      timeoutMs,
+      routing,
+    };
   }
 
   private logUsage(

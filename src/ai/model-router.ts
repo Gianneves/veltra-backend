@@ -1,11 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import type { BaseMessage } from '@langchain/core/messages';
-import type { AIMessageChunk } from '@langchain/core/messages';
-import {
-  RunnableBranch,
-  RunnableLambda,
-  type Runnable,
-} from '@langchain/core/runnables';
 import { ChatOpenAI } from '@langchain/openai';
 
 export type AiTier = 'cheap' | 'premium';
@@ -34,16 +27,6 @@ export interface ModelDecision {
   reason: string;
 }
 
-export interface RoutedChatInput {
-  signals: RoutingSignals;
-  messages: BaseMessage[];
-}
-
-export interface RoutedRunnable {
-  runnable: Runnable<RoutedChatInput, AIMessageChunk>;
-  decision: ModelDecision;
-}
-
 const DEFAULT_CHEAP_MODEL = 'gpt-4o-mini';
 const DEFAULT_PREMIUM_MODEL = 'gpt-4o';
 
@@ -57,13 +40,21 @@ const PLAN_CHANGE_PATTERN =
 const HEALTH_SIGNAL_PATTERN =
   /\b(dor|dores|les[ãa]o|les[õo]es|machuc\w*|lesion\w*|sintoma\w*|sa[úu]de|alerta\w*|card[íi]ac\w*|desmaio|press[ãa]o|falta de ar)\b/i;
 
-const MAX_TOKENS_BY_TASK: Record<AiTask, number> = {
+export const MAX_TOKENS_BY_TASK: Record<AiTask, number> = {
   activity_match: 300,
   activity_insight: 900,
   plan_review: 2000,
   coach_reply: 1400,
   generic: 700,
 };
+
+export function hasPlanChangeIntent(text: string): boolean {
+  return PLAN_CHANGE_PATTERN.test(text);
+}
+
+export function hasHealthSignal(text: string): boolean {
+  return HEALTH_SIGNAL_PATTERN.test(text);
+}
 
 @Injectable()
 export class AiModelRouter {
@@ -89,12 +80,12 @@ export class AiModelRouter {
       return this.decision('premium', 'routing_forced_premium');
     }
 
-    const hasHealthSignal =
+    const healthSignal =
       signals.hasHealthSignal ??
-      (signals.text ? this.hasHealthSignal(signals.text) : false);
+      (signals.text ? hasHealthSignal(signals.text) : false);
     const wantsPlanChange =
       signals.wantsPlanChange ??
-      (signals.text ? this.hasPlanChangeIntent(signals.text) : false);
+      (signals.text ? hasPlanChangeIntent(signals.text) : false);
 
     if (signals.task === 'activity_match') {
       return this.decision('cheap', 'structured_low_complexity');
@@ -105,7 +96,7 @@ export class AiModelRouter {
     }
 
     if (signals.task === 'activity_insight') {
-      if (hasHealthSignal) {
+      if (healthSignal) {
         return this.decision('premium', 'health_context');
       }
       if ((signals.contextLength ?? 0) > LONG_INSIGHT_CONTEXT_CHARS) {
@@ -118,7 +109,7 @@ export class AiModelRouter {
       return this.decision('premium', 'multi_week_plan_analysis');
     }
 
-    if (hasHealthSignal) {
+    if (healthSignal) {
       return this.decision('premium', 'health_context');
     }
     if (wantsPlanChange) {
@@ -133,45 +124,17 @@ export class AiModelRouter {
     return this.decision('cheap', 'simple_chat');
   }
 
-  buildRoutedRunnable(
-    signals: RoutingSignals,
+  createModel(
+    tier: AiTier,
+    task: AiTask,
     temperature: number,
-  ): RoutedRunnable {
-    const decision = this.decide(signals);
-
-    const cheapModel = this.createModel('cheap', signals.task, temperature);
-    const premiumModel = this.createModel('premium', signals.task, temperature);
-
-    const toMessages = RunnableLambda.from(
-      (input: RoutedChatInput) => input.messages,
-    );
-
-    const branch = RunnableBranch.from<RoutedChatInput, AIMessageChunk>([
-      [
-        (input: RoutedChatInput) =>
-          this.decide(input.signals).tier === 'premium',
-        toMessages.pipe(premiumModel),
-      ],
-      toMessages.pipe(cheapModel),
-    ]);
-
-    const runnable = RunnableLambda.from((input: RoutedChatInput) => input)
-      .pipe(branch)
-      .withConfig({ runName: `ai-${signals.task}-${decision.tier}` });
-
-    console.info(
-      `[ai] task=${signals.task} tier=${decision.tier} model=${decision.model} reason=${decision.reason}`,
-    );
-
-    return { runnable, decision };
-  }
-
-  createModel(tier: AiTier, task: AiTask, temperature: number): ChatOpenAI {
+    maxTokens: number = MAX_TOKENS_BY_TASK[task],
+  ): ChatOpenAI {
     return new ChatOpenAI({
       apiKey: process.env.OPENAI_API_KEY,
       model: this.modelName(tier),
       temperature,
-      maxTokens: MAX_TOKENS_BY_TASK[task],
+      maxTokens,
     });
   }
 
@@ -187,11 +150,11 @@ export class AiModelRouter {
   }
 
   hasPlanChangeIntent(text: string): boolean {
-    return PLAN_CHANGE_PATTERN.test(text);
+    return hasPlanChangeIntent(text);
   }
 
   hasHealthSignal(text: string): boolean {
-    return HEALTH_SIGNAL_PATTERN.test(text);
+    return hasHealthSignal(text);
   }
 
   private decision(tier: AiTier, reason: string): ModelDecision {
