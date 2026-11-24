@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import {
   AiProvider,
+  AiProviderUnavailableError,
   type AiProviderMessage,
+  type AiProviderName,
   type AiProviderRequest,
 } from './ai-provider';
 import { OpenAiProvider } from './openai-provider';
@@ -56,6 +58,7 @@ export interface CoachReplyResult {
   proposal: CoachProposal | null;
   proposals: CoachProposal[];
   malformed: boolean;
+  provider?: AiProviderName;
 }
 
 export const MAX_COACH_PROPOSALS = 5;
@@ -225,6 +228,10 @@ export class AiService {
     return this.openAi.createEmbedding(text);
   }
 
+  isConfigured(): boolean {
+    return this.provider.isConfigured();
+  }
+
   async generateInsight(data: string) {
     const { text } = await this.invokeRouted('generic', 0, [
       {
@@ -244,7 +251,7 @@ export class AiService {
     userMessage: string,
     onToken: (token: string) => void,
   ): Promise<CoachReplyResult | null> {
-    if (!process.env.OPENAI_API_KEY) return null;
+    if (!this.isConfigured()) return null;
 
     const signals: RoutingSignals = {
       task: 'coach_reply',
@@ -283,21 +290,30 @@ export class AiService {
     try {
       const result = await this.provider.stream(request, decision.tier, track);
 
-      this.logUsage('coach_reply', decision, result.usage);
-      return splitCoachReply(result.text);
+      this.logUsage(
+        'coach_reply',
+        result.decision,
+        result.usage,
+        result.provider,
+      );
+      return { ...splitCoachReply(result.text), provider: result.provider };
     } catch (err) {
       console.error('Erro ao gerar resposta do coach:', (err as Error).message);
 
+      const failed = this.providerOf(err);
       if (
         !full.trim() &&
         decision.tier === 'cheap' &&
-        this.provider.canEscalate()
+        failed !== null &&
+        this.provider.canEscalate(failed)
       ) {
         const retry = await this.streamPremiumFallback(request, onToken);
         if (retry !== null) return retry;
       }
 
-      return full.trim() ? splitCoachReply(full) : null;
+      return full.trim()
+        ? { ...splitCoachReply(full), provider: failed ?? undefined }
+        : null;
     }
   }
 
@@ -308,26 +324,31 @@ export class AiService {
     let full = '';
 
     try {
-      await this.provider.stream(request, 'premium', (token) => {
+      const result = await this.provider.stream(request, 'premium', (token) => {
         full += token;
         onToken(token);
       });
 
       console.info('[ai] task=coach_reply tier=premium reason=fallback');
-      return splitCoachReply(full);
+      return { ...splitCoachReply(full), provider: result.provider };
     } catch (err) {
       console.error(
         'Erro ao gerar resposta do coach (fallback premium):',
         (err as Error).message,
       );
-      return full.trim() ? splitCoachReply(full) : null;
+      return full.trim()
+        ? {
+            ...splitCoachReply(full),
+            provider: this.providerOf(err) ?? undefined,
+          }
+        : null;
     }
   }
 
   async generateActivityInsight(
     context: string,
   ): Promise<ActivityInsightContent | null> {
-    if (!process.env.OPENAI_API_KEY) return null;
+    if (!this.isConfigured()) return null;
 
     const messages: AiProviderMessage[] = [
       {
@@ -357,7 +378,7 @@ Regras: português do Brasil; "summary" com 2 frases resumindo a corrida; "perfo
   }
 
   async generatePlanReview(context: string): Promise<PlanReview | null> {
-    if (!process.env.OPENAI_API_KEY) return null;
+    if (!this.isConfigured()) return null;
 
     const messages: AiProviderMessage[] = [
       {
@@ -387,7 +408,7 @@ Regras: português do Brasil; "overview" com 2-3 frases resumindo a estratégia;
   async classifyActivityMatch(
     context: string,
   ): Promise<{ sessionId: string; reason?: string } | null> {
-    if (!process.env.OPENAI_API_KEY) return null;
+    if (!this.isConfigured()) return null;
 
     const messages: AiProviderMessage[] = [
       {
@@ -444,7 +465,7 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
     const decision = this.provider.decide(request);
     const response = await this.provider.complete(request, decision.tier);
 
-    this.logUsage(task, response.decision, response.usage);
+    this.logUsage(task, response.decision, response.usage, response.provider);
 
     return { text: response.text, decision: response.decision };
   }
@@ -467,11 +488,14 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
     try {
       const response = await this.provider.complete(request, decision.tier);
 
-      this.logUsage(task, decision, response.usage);
+      this.logUsage(task, response.decision, response.usage, response.provider);
       const parsed = parse(response.text);
       if (parsed !== null) return parsed;
 
-      if (decision.tier !== 'cheap' || !this.provider.canEscalate()) {
+      if (
+        decision.tier !== 'cheap' ||
+        !this.provider.canEscalate(response.provider)
+      ) {
         return null;
       }
 
@@ -486,6 +510,7 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
           reason: 'parse_escalation',
         },
         retry.usage,
+        retry.provider,
       );
 
       return parse(retry.text);
@@ -516,11 +541,16 @@ Regras: escolha apenas ids presentes em "candidatos"; prefira o candidato com ma
     task: AiTask,
     decision: ModelDecision,
     usage: unknown,
+    provider: AiProviderName,
   ): void {
     if (!usage) return;
     console.info(
-      `[ai] task=${task} tier=${decision.tier} model=${decision.model} usage=${JSON.stringify(usage)}`,
+      `[ai] task=${task} tier=${decision.tier} model=${decision.model} provider=${provider} usage=${JSON.stringify(usage)}`,
     );
+  }
+
+  private providerOf(err: unknown): AiProviderName | null {
+    return err instanceof AiProviderUnavailableError ? err.provider : null;
   }
 
   private parsePlanReview(text: string): PlanReview | null {

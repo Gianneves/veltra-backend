@@ -1,35 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import {
-  AIMessage,
-  HumanMessage,
-  SystemMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
-import {
   AiProvider,
-  AiProviderUnavailableError,
-  type AiProviderMessage,
+  type AiProviderName,
   type AiProviderRequest,
   type AiProviderResult,
 } from './ai-provider';
 import { AiModelRouter, type AiTier, type ModelDecision } from './model-router';
+import {
+  messageText,
+  runProviderCall,
+  toProviderMessages,
+} from './provider-runtime';
 
-const PROVIDER_NAME = 'openai';
-
-function toMessages(messages: AiProviderMessage[]): BaseMessage[] {
-  return messages.map((message) => {
-    if (message.role === 'system') return new SystemMessage(message.content);
-    if (message.role === 'assistant') return new AIMessage(message.content);
-    return new HumanMessage(message.content);
-  });
-}
-
-function messageText(response: { content: unknown }): string {
-  return typeof response.content === 'string'
-    ? response.content
-    : JSON.stringify(response.content);
-}
+const PROVIDER_NAME: AiProviderName = 'openai';
 
 @Injectable()
 export class OpenAiProvider extends AiProvider {
@@ -45,24 +29,30 @@ export class OpenAiProvider extends AiProvider {
     return decision;
   }
 
-  canEscalate(): boolean {
-    return this.modelRouter.escalationEnabled();
+  canEscalate(provider: AiProviderName): boolean {
+    return provider === PROVIDER_NAME && this.modelRouter.escalationEnabled();
+  }
+
+  isConfigured(): boolean {
+    return !!process.env.OPENAI_API_KEY?.trim();
   }
 
   async complete(
     request: AiProviderRequest,
     tier: AiTier,
   ): Promise<AiProviderResult> {
-    return this.execute(request, async (signal) => {
+    return runProviderCall(PROVIDER_NAME, request.timeoutMs, async (signal) => {
       const model = this.createModel(request, tier);
-      const response = await model.invoke(toMessages(request.messages), {
-        signal,
-      });
+      const response = await model.invoke(
+        toProviderMessages(request.messages),
+        { signal },
+      );
 
       return {
         text: messageText(response),
         decision: this.decision(request, tier),
         usage: response.usage_metadata,
+        provider: PROVIDER_NAME,
       };
     });
   }
@@ -72,9 +62,9 @@ export class OpenAiProvider extends AiProvider {
     tier: AiTier,
     onToken: (token: string) => void,
   ): Promise<AiProviderResult> {
-    return this.execute(request, async (signal) => {
+    return runProviderCall(PROVIDER_NAME, request.timeoutMs, async (signal) => {
       const model = this.createModel(request, tier);
-      const stream = await model.stream(toMessages(request.messages), {
+      const stream = await model.stream(toProviderMessages(request.messages), {
         signal,
       });
 
@@ -89,7 +79,12 @@ export class OpenAiProvider extends AiProvider {
         onToken(token);
       }
 
-      return { text, decision: this.decision(request, tier), usage };
+      return {
+        text,
+        decision: this.decision(request, tier),
+        usage,
+        provider: PROVIDER_NAME,
+      };
     });
   }
 
@@ -121,80 +116,5 @@ export class OpenAiProvider extends AiProvider {
       model: this.modelRouter.modelName(tier),
       reason: 'escalation',
     };
-  }
-
-  private async execute<T>(
-    request: AiProviderRequest,
-    run: (signal: AbortSignal) => Promise<T>,
-  ): Promise<T> {
-    const controller = new AbortController();
-    const timeout = this.startTimeout(request.timeoutMs, controller);
-
-    try {
-      return await run(controller.signal);
-    } catch (err) {
-      throw this.unavailable(err, timeout.timedOut());
-    } finally {
-      timeout.clear();
-    }
-  }
-
-  private startTimeout(
-    timeoutMs: number,
-    controller: AbortController,
-  ): { clear: () => void; timedOut: () => boolean } {
-    if (timeoutMs <= 0) {
-      return { clear: () => undefined, timedOut: () => false };
-    }
-
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, timeoutMs);
-
-    return {
-      clear: () => clearTimeout(timer),
-      timedOut: () => timedOut,
-    };
-  }
-
-  private unavailable(
-    err: unknown,
-    timedOut: boolean,
-  ): AiProviderUnavailableError {
-    if (err instanceof AiProviderUnavailableError) return err;
-    if (timedOut) {
-      return new AiProviderUnavailableError(
-        PROVIDER_NAME,
-        'timeout',
-        undefined,
-        err,
-      );
-    }
-
-    const status = this.statusOf(err);
-    if (status !== undefined) {
-      return new AiProviderUnavailableError(PROVIDER_NAME, 'http', status, err);
-    }
-
-    return new AiProviderUnavailableError(
-      PROVIDER_NAME,
-      'transport',
-      undefined,
-      err,
-    );
-  }
-
-  private statusOf(err: unknown): number | undefined {
-    if (!err || typeof err !== 'object') return undefined;
-    const record = err as {
-      status?: unknown;
-      statusCode?: unknown;
-      response?: { status?: unknown };
-    };
-    const status =
-      record.status ?? record.statusCode ?? record.response?.status;
-    return typeof status === 'number' ? status : undefined;
   }
 }
