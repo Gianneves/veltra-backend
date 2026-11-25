@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { RedisService } from 'src/redis/redis.service';
 
 const PRIMARY_DOWN_KEY = 'ai:provider:primary:down';
+const NOTICE_KEY_PREFIX = 'ai:provider:notice:';
+const NOTICE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const DEFAULT_COOLDOWN_SECONDS = 60;
 
 @Injectable()
@@ -51,6 +53,40 @@ export class AiProviderStateService {
     } catch (err) {
       this.warn('apagar', err);
     }
+  }
+
+  async consumeNotice(userId: string, episodeId: number): Promise<boolean> {
+    const key = this.noticeKey(userId);
+
+    let current: string | null;
+    try {
+      current = await this.redis.get(key);
+    } catch (err) {
+      this.warn('ler', err);
+      return false;
+    }
+
+    if (current === String(episodeId)) return false;
+
+    try {
+      await this.redis.set(key, String(episodeId), NOTICE_TTL_SECONDS);
+      return true;
+    } catch (err) {
+      this.warn('gravar', err);
+      return false;
+    }
+  }
+
+  async clearNotice(userId: string): Promise<void> {
+    try {
+      await this.redis.del(this.noticeKey(userId));
+    } catch (err) {
+      this.warn('apagar', err);
+    }
+  }
+
+  private noticeKey(userId: string): string {
+    return `${NOTICE_KEY_PREFIX}${userId}`;
   }
 
   private warn(action: string, err: unknown): void {
