@@ -4,6 +4,8 @@ import { RedisService } from 'src/redis/redis.service';
 const PRIMARY_DOWN_KEY = 'ai:provider:primary:down';
 const NOTICE_KEY_PREFIX = 'ai:provider:notice:';
 const NOTICE_TTL_SECONDS = 7 * 24 * 60 * 60;
+const PLAN_REVIEW_KEY_PREFIX = 'ai:plan-review:attempt:';
+const PLAN_REVIEW_TTL_SECONDS = 60;
 const DEFAULT_COOLDOWN_SECONDS = 60;
 
 @Injectable()
@@ -90,6 +92,19 @@ export class AiProviderStateService {
       await this.redis.del(this.noticeKey(userId));
     } catch (err) {
       this.warn('apagar', err);
+    }
+  }
+
+  async tryStartPlanReview(planId: string): Promise<boolean> {
+    try {
+      return await this.redis.setNx(
+        `${PLAN_REVIEW_KEY_PREFIX}${planId}`,
+        String(Date.now()),
+        PLAN_REVIEW_TTL_SECONDS,
+      );
+    } catch (err) {
+      this.warn('gravar', err);
+      return true;
     }
   }
 
