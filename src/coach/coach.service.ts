@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsOrder, In, MoreThanOrEqual, Repository } from 'typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
+import { AiProviderStateService } from 'src/ai/ai-provider-state.service';
 import { AiService, type CoachProposal } from 'src/ai/ai.service';
 import { Goal } from 'src/goals/entities/goal.entity';
 import { assessDistanceForAge, planAgeAdjustment } from 'src/health/age-policy';
@@ -66,6 +67,8 @@ const MAX_DISTANCE_CHANGE = 0.25;
 const MAX_PACE_CHANGE = 0.1;
 const MAX_NOTES_LENGTH = 300;
 const NEW_CONVERSATION_TITLE = 'Nova conversa';
+const PROVIDER_NOTICE =
+  '_Tive uma instabilidade no coach agora. As respostas podem variar um pouco até o serviço voltar ao normal; seu plano e suas corridas não mudam._';
 
 // Sinais de que o texto prometeu mudanças no plano (e portanto deveria
 // existir um bloco <proposta> com botões nesta resposta).
@@ -136,6 +139,7 @@ export class CoachService {
     private readonly athleteProfileService: AthleteProfileService,
     private readonly aiService: AiService,
     private readonly healthAlertsService: HealthAlertsService,
+    private readonly aiProviderStateService: AiProviderStateService,
   ) {}
 
   async getOrCreateConversation(userId: string, conversationId?: string) {
@@ -313,6 +317,19 @@ export class CoachService {
     ) {
       text +=
         '\n\n_Mostrei seu plano acima, mas não gerei nenhuma mudança — nada foi alterado. Se você quer ajustar algum treino, peça especificando, ex.: "reduz o easy de Qua para 5 km"._';
+    }
+
+    if (result?.provider === 'deepseek' && result.text?.trim()) {
+      const episode = await this.aiProviderStateService.primaryDown();
+      if (
+        episode &&
+        (await this.aiProviderStateService.consumeNotice(userId, episode.until))
+      ) {
+        text += `\n\n${PROVIDER_NOTICE}`;
+      }
+    } else if (result?.provider === 'openai') {
+      const episode = await this.aiProviderStateService.primaryDown();
+      if (!episode) await this.aiProviderStateService.clearNotice(userId);
     }
 
     if (rawProposals.length > 0) {

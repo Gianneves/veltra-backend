@@ -1,9 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Activity } from 'src/activities/entities/activity.entity';
+import { AiProviderStateService } from 'src/ai/ai-provider-state.service';
 import { AiService } from 'src/ai/ai.service';
 import { Goal } from 'src/goals/entities/goal.entity';
 import { HealthAlertsService } from 'src/health/health-alerts.service';
+import { RedisService } from 'src/redis/redis.service';
 import { AthleteProfileService } from 'src/training-plans/athlete-profile.service';
 import { TrainingPlan } from 'src/training-plans/entities/training-plan.entity';
 import { TrainingSession } from 'src/training-plans/entities/training-session.entity';
@@ -46,6 +48,30 @@ function systemPromptFrom(mock: jest.Mock): string {
   return firstCall[0];
 }
 
+function fakeRedis() {
+  const values = new Map<string, string>();
+  return {
+    values,
+    get: jest.fn((key: string) => Promise.resolve(values.get(key) ?? null)),
+    set: jest.fn((key: string, value: string) => {
+      values.set(key, value);
+      return Promise.resolve();
+    }),
+    setNx: jest.fn((key: string, value: string) => {
+      if (values.has(key)) return Promise.resolve(false);
+      values.set(key, value);
+      return Promise.resolve(true);
+    }),
+    del: jest.fn((key: string) => {
+      values.delete(key);
+      return Promise.resolve();
+    }),
+  };
+}
+
+const PROVIDER_NOTICE =
+  '_Tive uma instabilidade no coach agora. As respostas podem variar um pouco até o serviço voltar ao normal; seu plano e suas corridas não mudam._';
+
 describe('CoachService', () => {
   let service: CoachService;
   let conversationRepository: {
@@ -69,6 +95,7 @@ describe('CoachService', () => {
   let athleteProfileService: { build: jest.Mock; getAge: jest.Mock };
   let aiService: { generateCoachReplyStream: jest.Mock };
   let healthAlertsService: { getAlerts: jest.Mock };
+  let redis: ReturnType<typeof fakeRedis>;
 
   beforeEach(async () => {
     conversationRepository = {
@@ -133,6 +160,7 @@ describe('CoachService', () => {
       getAge: jest.fn().mockResolvedValue(undefined),
     };
     healthAlertsService = { getAlerts: jest.fn().mockResolvedValue([]) };
+    redis = fakeRedis();
     aiService = {
       generateCoachReplyStream: jest
         .fn()
@@ -152,6 +180,8 @@ describe('CoachService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         CoachService,
+        AiProviderStateService,
+        { provide: RedisService, useValue: redis },
         {
           provide: getRepositoryToken(CoachConversation),
           useValue: conversationRepository,
@@ -217,6 +247,211 @@ describe('CoachService', () => {
       'Desculpe, não consegui responder agora. Tente novamente.',
     );
     expect(messageRepository.save).toHaveBeenCalledTimes(2);
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.setNx).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
+    expect(redis.del).not.toHaveBeenCalled();
+  });
+
+  it('acrescenta o aviso único à primeira resposta do alternativo e grava no texto', async () => {
+    redis.values.set('ai:provider:primary:down', '1111');
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Resposta do alternativo',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+      provider: 'deepseek',
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como estou indo?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    const expected = `Resposta do alternativo\n\n${PROVIDER_NOTICE}`;
+    expect(result.message.content).toBe(expected);
+    const coachMessage = (
+      messageRepository.save.mock.calls[1] as [{ content: string }]
+    )[0];
+    expect(coachMessage.content).toBe(expected);
+    expect(redis.values.get('ai:provider:notice:user-1')).toBe('1111');
+    expect(redis.setNx).toHaveBeenCalledWith(
+      'ai:provider:notice:user-1',
+      '1111',
+      7 * 24 * 60 * 60,
+    );
+  });
+
+  it('omite o aviso quando não há episódio de falha', async () => {
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Resposta do alternativo',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+      provider: 'deepseek',
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como estou indo?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(result.message.content).toBe('Resposta do alternativo');
+    expect(redis.values.has('ai:provider:notice:user-1')).toBe(false);
+  });
+
+  it('omite o aviso quando o Redis está fora', async () => {
+    redis.get.mockRejectedValue(new Error('redis fora'));
+    redis.setNx.mockRejectedValue(new Error('redis fora'));
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Resposta do alternativo',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+      provider: 'deepseek',
+    });
+
+    const warning = jest.spyOn(console, 'warn').mockImplementation();
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como estou indo?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(result.message.content).toBe('Resposta do alternativo');
+    expect(redis.values.has('ai:provider:notice:user-1')).toBe(false);
+    expect(redis.set).not.toHaveBeenCalled();
+    warning.mockRestore();
+  });
+
+  it('não avisa quando o alternativo responde sem texto', async () => {
+    redis.values.set('ai:provider:primary:down', '1111');
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: '   ',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+      provider: 'deepseek',
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como estou indo?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(result.message.content).toBe(
+      'Desculpe, não consegui responder agora. Tente novamente.',
+    );
+    expect(redis.values.has('ai:provider:notice:user-1')).toBe(false);
+    expect(redis.setNx).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('não repete o aviso nas respostas seguintes do mesmo episódio', async () => {
+    redis.values.set('ai:provider:primary:down', '1111');
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Resposta do alternativo',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+      provider: 'deepseek',
+    });
+
+    const first = await service.streamMessage(
+      'user-1',
+      'Primeira mensagem',
+      'conv-1',
+      jest.fn(),
+    );
+    const second = await service.streamMessage(
+      'user-1',
+      'Segunda mensagem',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(first.message.content).toBe(
+      `Resposta do alternativo\n\n${PROVIDER_NOTICE}`,
+    );
+    expect(second.message.content).toBe('Resposta do alternativo');
+    expect(redis.values.get('ai:provider:notice:user-1')).toBe('1111');
+  });
+
+  it('apaga a marca quando o principal atende', async () => {
+    redis.values.set('ai:provider:notice:user-1', '1111');
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Resposta do principal',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+      provider: 'openai',
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como estou indo?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(result.message.content).toBe('Resposta do principal');
+    expect(redis.values.has('ai:provider:notice:user-1')).toBe(false);
+    expect(redis.del).toHaveBeenCalledWith('ai:provider:notice:user-1');
+  });
+
+  it('não apaga a marca quando o principal só entrega resposta parcial', async () => {
+    redis.values.set('ai:provider:notice:user-1', '1111');
+    redis.values.set('ai:provider:primary:down', '2222');
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Resposta parcial do principal',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+      provider: 'openai',
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como estou indo?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(result.message.content).toBe('Resposta parcial do principal');
+    expect(redis.values.get('ai:provider:notice:user-1')).toBe('1111');
+    expect(redis.del).not.toHaveBeenCalledWith('ai:provider:notice:user-1');
+  });
+
+  it('avisa de novo em um novo episódio mesmo com a marca anterior', async () => {
+    redis.values.set('ai:provider:notice:user-1', '1111');
+    redis.values.set('ai:provider:primary:down', '2222');
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Resposta do alternativo',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+      provider: 'deepseek',
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como estou indo?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(result.message.content).toBe(
+      `Resposta do alternativo\n\n${PROVIDER_NOTICE}`,
+    );
+    expect(redis.values.get('ai:provider:notice:user-1')).toBe('2222');
   });
 
   it('accepts a cautious proposal for a future session', async () => {
