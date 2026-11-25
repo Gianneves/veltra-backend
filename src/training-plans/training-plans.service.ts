@@ -60,18 +60,19 @@ import {
 } from './training-session-state';
 import { buildPlanAnnotations } from './plan-annotations';
 import type { PlanAnnotations } from './plan-annotations';
-import { PlanReviewWeek, buildPlanReviewContext } from './plan-review-context';
+import {
+  PlanReviewPaces,
+  PlanReviewSession,
+  PlanReviewWeek,
+  buildPlanReviewContext,
+} from './plan-review-context';
 
 export interface generateFromGoalResult {
   plans: TrainingPlan[];
 }
 
-interface PaceSet {
-  interval: number;
-  threshold: number;
-  easy: number;
+interface PaceSet extends PlanReviewPaces {
   recovery: number;
-  goal: number;
 }
 
 type SessionRole =
@@ -660,12 +661,9 @@ export class TrainingPlansService {
         workouts: [workouts.primary.label, workouts.secondary?.label].filter(
           (w): w is string => !!w,
         ),
-        sessions: (savedPlan.sessions ?? []).map((session) => ({
-          day: session.day,
-          type: session.type,
-          km: Math.round((session.plannedDistance / 1000) * 10) / 10,
-          paceSegKm: Math.round(session.plannedPace),
-        })),
+        sessions: (savedPlan.sessions ?? []).map((session) =>
+          this.toPlanReviewSession(session),
+        ),
       });
     }
 
@@ -1982,6 +1980,15 @@ export class TrainingPlansService {
     return `${min}:${sec.toString().padStart(2, '0')}`;
   }
 
+  private toPlanReviewSession(session: TrainingSession): PlanReviewSession {
+    return {
+      day: session.day,
+      type: session.type,
+      km: Math.round((session.plannedDistance / 1000) * 10) / 10,
+      paceSegKm: Math.round(session.plannedPace),
+    };
+  }
+
   private schedulePlanAnnotationBackfill(plan: TrainingPlan): void {
     if (!this.aiService.isConfigured()) return;
     if (plan.focus || plan.coachNotes) return;
@@ -1992,8 +1999,8 @@ export class TrainingPlansService {
   }
 
   private async backfillPlanReview(plan: TrainingPlan): Promise<void> {
-    if (!(await this.aiProviderState.tryStartPlanReview(plan.id))) return;
     if (!plan.goalId) return;
+    if (!(await this.aiProviderState.tryStartPlanReview(plan.id))) return;
 
     const goal = await this.goalRepository.findOne({
       where: { id: plan.goalId, userId: plan.userId },
@@ -2039,12 +2046,7 @@ export class TrainingPlansService {
             10,
         ) / 10,
       workouts: [],
-      sessions: sessions.map((session) => ({
-        day: session.day,
-        type: session.type,
-        km: Math.round((session.plannedDistance / 1000) * 10) / 10,
-        paceSegKm: Math.round(session.plannedPace),
-      })),
+      sessions: sessions.map((session) => this.toPlanReviewSession(session)),
     };
 
     const context = buildPlanReviewContext(

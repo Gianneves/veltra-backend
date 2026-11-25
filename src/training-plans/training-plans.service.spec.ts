@@ -2261,6 +2261,11 @@ describe('backfill da anotação do plano', () => {
     expect(context.semanas[0].semana).toBe(
       currentWeekStart.toISOString().slice(0, 10),
     );
+
+    await mocks.service.findByWeek('user-1', currentWeekStart.toISOString());
+    await flush();
+
+    expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(1);
   });
 
   it('limita a tentativa por plano a uma a cada 60 segundos', async () => {
@@ -2335,5 +2340,34 @@ describe('backfill da anotação do plano', () => {
     expect(mocks.aiService.generatePlanReview).not.toHaveBeenCalled();
     expect(mocks.redis.setNx).not.toHaveBeenCalled();
     expect(mocks.goalRepository.findOne).not.toHaveBeenCalled();
+  });
+
+  it('mantém a leitura quando a revisão falha e tenta de novo depois da trava', async () => {
+    const plan = readPlan();
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const mocks = backfillService([plan], {
+      review: () => Promise.reject(new Error('IA fora')),
+    });
+
+    const response = await mocks.service.findCurrent('user-1');
+    await flush();
+
+    expect(response).toBe(plan);
+    expect(consoleError).toHaveBeenCalled();
+
+    await mocks.service.findCurrent('user-1');
+    await flush();
+
+    expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(1);
+
+    mocks.redis.advance(60000);
+    await mocks.service.findCurrent('user-1');
+    await flush();
+
+    expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(2);
+
+    consoleError.mockRestore();
   });
 });
