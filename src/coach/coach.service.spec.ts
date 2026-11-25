@@ -57,6 +57,11 @@ function fakeRedis() {
       values.set(key, value);
       return Promise.resolve();
     }),
+    setNx: jest.fn((key: string, value: string) => {
+      if (values.has(key)) return Promise.resolve(false);
+      values.set(key, value);
+      return Promise.resolve(true);
+    }),
     del: jest.fn((key: string) => {
       values.delete(key);
       return Promise.resolve();
@@ -243,6 +248,7 @@ describe('CoachService', () => {
     );
     expect(messageRepository.save).toHaveBeenCalledTimes(2);
     expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.setNx).not.toHaveBeenCalled();
     expect(redis.set).not.toHaveBeenCalled();
     expect(redis.del).not.toHaveBeenCalled();
   });
@@ -271,7 +277,7 @@ describe('CoachService', () => {
     )[0];
     expect(coachMessage.content).toBe(expected);
     expect(redis.values.get('ai:provider:notice:user-1')).toBe('1111');
-    expect(redis.set).toHaveBeenCalledWith(
+    expect(redis.setNx).toHaveBeenCalledWith(
       'ai:provider:notice:user-1',
       '1111',
       7 * 24 * 60 * 60,
@@ -300,6 +306,7 @@ describe('CoachService', () => {
 
   it('omite o aviso quando o Redis está fora', async () => {
     redis.get.mockRejectedValue(new Error('redis fora'));
+    redis.setNx.mockRejectedValue(new Error('redis fora'));
     aiService.generateCoachReplyStream.mockResolvedValue({
       text: 'Resposta do alternativo',
       proposal: null,
@@ -344,6 +351,7 @@ describe('CoachService', () => {
       'Desculpe, não consegui responder agora. Tente novamente.',
     );
     expect(redis.values.has('ai:provider:notice:user-1')).toBe(false);
+    expect(redis.setNx).not.toHaveBeenCalled();
     expect(redis.set).not.toHaveBeenCalled();
   });
 
@@ -397,6 +405,29 @@ describe('CoachService', () => {
     expect(result.message.content).toBe('Resposta do principal');
     expect(redis.values.has('ai:provider:notice:user-1')).toBe(false);
     expect(redis.del).toHaveBeenCalledWith('ai:provider:notice:user-1');
+  });
+
+  it('não apaga a marca quando o principal só entrega resposta parcial', async () => {
+    redis.values.set('ai:provider:notice:user-1', '1111');
+    redis.values.set('ai:provider:primary:down', '2222');
+    aiService.generateCoachReplyStream.mockResolvedValue({
+      text: 'Resposta parcial do principal',
+      proposal: null,
+      proposals: [],
+      malformed: false,
+      provider: 'openai',
+    });
+
+    const result = await service.streamMessage(
+      'user-1',
+      'Como estou indo?',
+      'conv-1',
+      jest.fn(),
+    );
+
+    expect(result.message.content).toBe('Resposta parcial do principal');
+    expect(redis.values.get('ai:provider:notice:user-1')).toBe('1111');
+    expect(redis.del).not.toHaveBeenCalledWith('ai:provider:notice:user-1');
   });
 
   it('avisa de novo em um novo episódio mesmo com a marca anterior', async () => {

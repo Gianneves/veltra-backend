@@ -328,7 +328,8 @@ export class CoachService {
         text += `\n\n${PROVIDER_NOTICE}`;
       }
     } else if (result?.provider === 'openai') {
-      await this.aiProviderStateService.clearNotice(userId);
+      const episode = await this.aiProviderStateService.primaryDown();
+      if (!episode) await this.aiProviderStateService.clearNotice(userId);
     }
 
     if (rawProposals.length > 0) {

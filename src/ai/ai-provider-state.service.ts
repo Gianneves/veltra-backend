@@ -57,6 +57,14 @@ export class AiProviderStateService {
 
   async consumeNotice(userId: string, episodeId: number): Promise<boolean> {
     const key = this.noticeKey(userId);
+    const value = String(episodeId);
+
+    try {
+      if (await this.redis.setNx(key, value, NOTICE_TTL_SECONDS)) return true;
+    } catch (err) {
+      this.warn('gravar', err);
+      return false;
+    }
 
     let current: string | null;
     try {
@@ -66,10 +74,10 @@ export class AiProviderStateService {
       return false;
     }
 
-    if (current === String(episodeId)) return false;
+    if (current === value) return false;
 
     try {
-      await this.redis.set(key, String(episodeId), NOTICE_TTL_SECONDS);
+      await this.redis.set(key, value, NOTICE_TTL_SECONDS);
       return true;
     } catch (err) {
       this.warn('gravar', err);
