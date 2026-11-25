@@ -18,6 +18,7 @@ import { Activity } from 'src/activities/entities/activity.entity';
 import { RUN_SPORTS } from 'src/activities/run-sports';
 import { Goal } from 'src/goals/entities/goal.entity';
 import { AiService } from 'src/ai/ai.service';
+import { AiProviderStateService } from 'src/ai/ai-provider-state.service';
 import {
   HEALTH_DISCLAIMER,
   assessDistanceForAge,
@@ -58,6 +59,8 @@ import {
   sumPlannedVolumeMeters,
 } from './training-session-state';
 import { buildPlanAnnotations } from './plan-annotations';
+import type { PlanAnnotations } from './plan-annotations';
+import { PlanReviewWeek, buildPlanReviewContext } from './plan-review-context';
 
 export interface generateFromGoalResult {
   plans: TrainingPlan[];
@@ -82,14 +85,6 @@ type SessionRole =
 interface WeekLayout {
   day: string;
   role: SessionRole;
-}
-
-interface WeekSummary {
-  weekStart: string;
-  phase: PlanPhase;
-  weeklyKm: number;
-  longKm: number;
-  workouts: string[];
 }
 
 const DAY_ORDER: Record<string, number> = {
@@ -118,6 +113,7 @@ const MIN_PACE = 150;
 const MAX_PACE = 600;
 const MIN_EASY_KM = 3;
 const MAX_QUALITY_MAIN_RATIO = 0.2;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const SESSIONS_ORDER = {
   sessions: { dayOrder: 'ASC' },
@@ -143,6 +139,7 @@ export class TrainingPlansService {
     private readonly activityRepository: Repository<Activity>,
     private readonly athleteProfileService: AthleteProfileService,
     private readonly aiService: AiService,
+    private readonly aiProviderState: AiProviderStateService,
     private readonly activityMatcher: ActivityMatcherService,
     private readonly dataSource: DataSource,
   ) {}
@@ -157,7 +154,11 @@ export class TrainingPlansService {
       order: SESSIONS_ORDER,
     });
 
-    return plan ? normalizePlanReadState(plan) : null;
+    if (!plan) return null;
+
+    const normalized = normalizePlanReadState(plan);
+    this.schedulePlanAnnotationBackfill(normalized);
+    return normalized;
   }
 
   async findAll(userId: string) {
@@ -167,7 +168,13 @@ export class TrainingPlansService {
       order: { weekStart: 'ASC', ...SESSIONS_ORDER },
     });
 
-    return plans.map((plan) => normalizePlanReadState(plan));
+    const normalized = plans.map((plan) => normalizePlanReadState(plan));
+    const weekStart = this.getWeekStart(new Date()).toISOString();
+    const current = normalized.find((plan) => plan.weekStart === weekStart);
+
+    if (current) this.schedulePlanAnnotationBackfill(current);
+
+    return normalized;
   }
 
   async findByWeek(userId: string, weekStart: string) {
@@ -558,7 +565,7 @@ export class TrainingPlansService {
     const calibrationNote = this.describePlanBasis(profile);
 
     const plans: TrainingPlan[] = [];
-    const summaries: WeekSummary[] = [];
+    const summaries: PlanReviewWeek[] = [];
     const phaseWeekIndexes: Record<PlanPhase, number> = {
       base: 0,
       build: 0,
@@ -653,6 +660,12 @@ export class TrainingPlansService {
         workouts: [workouts.primary.label, workouts.secondary?.label].filter(
           (w): w is string => !!w,
         ),
+        sessions: (savedPlan.sessions ?? []).map((session) => ({
+          day: session.day,
+          type: session.type,
+          km: Math.round((session.plannedDistance / 1000) * 10) / 10,
+          paceSegKm: Math.round(session.plannedPace),
+        })),
       });
     }
 
@@ -1969,134 +1982,95 @@ export class TrainingPlansService {
     return `${min}:${sec.toString().padStart(2, '0')}`;
   }
 
-  private async enrichPlanWithAi(
-    goal: Goal,
-    profile: AthleteProfile,
-    paces: PaceSet,
-    plans: TrainingPlan[],
-    summaries: WeekSummary[],
-    assessment?: RaceTargetAssessment,
-    targetNote?: string,
-    patternNote?: string,
-  ) {
-    if (!this.aiService.isConfigured() || plans.length === 0) return;
+  private schedulePlanAnnotationBackfill(plan: TrainingPlan): void {
+    if (!this.aiService.isConfigured()) return;
+    if (plan.focus || plan.coachNotes) return;
 
-    const pattern = profile.pattern;
+    this.backfillPlanReview(plan).catch((err) =>
+      console.error('Erro ao completar anotação do plano com IA:', err),
+    );
+  }
 
-    const context = JSON.stringify({
-      atleta: {
-        nivel: profile.level,
-        temHistorico: profile.hasData,
-        volumeSemanalRecenteKm: profile.recentWeeklyKm,
-        longaoRecenteKm: profile.longestRunKm,
-        melhorPace5k: profile.bestShortPace,
-        melhorPace10k: profile.bestMediumPace,
-        corridasPorSemana: profile.runsPerWeek,
-        idade: profile.age ?? null,
-        fcMaximaPrevista: profile.predictedMaxHeartRate ?? null,
-        limitePorIdade: planAgeAdjustment(profile.age)?.reason ?? null,
-        ultimas3Semanas: profile.recentForm?.hasData
-          ? {
-              janelaInicio: profile.recentForm.windowStart.slice(0, 10),
-              janelaFim: profile.recentForm.windowEnd.slice(0, 10),
-              semanas: profile.recentForm.weeks,
-              corridas: profile.recentForm.runs,
-              kmPorSemana: profile.recentForm.weeklyKm,
-              corridasPorSemana: profile.recentForm.runsPerWeek,
-              longaoKm: profile.recentForm.longestKm,
-            }
-          : null,
-        teste3Km: profile.threeKm
-          ? {
-              tempoSegundos: profile.threeKm.time,
-              paceSegKm: profile.threeKm.pace,
-              nivelEstimado: profile.threeKm.level,
-            }
-          : null,
-        baseDoPlano: profile.recentForm?.hasData
-          ? 'ultimas3Semanas+teste3Km'
-          : profile.threeKm
-            ? 'teste3Km+preferencias'
-            : 'historico',
-      },
-      historicoDoAtleta: pattern?.hasData
-        ? {
-            amostraDeCorridas: pattern.sampleSize,
-            semanasAnalisadas: pattern.weeksAnalyzed,
-            confianca: pattern.confidence,
-            diasQueCostumaCorrer: pattern.preferredRunDays,
-            diasDeQualidade: pattern.preferredQualityDays,
-            diaDoLongao: pattern.preferredLongRunDay ?? null,
-            corridasPorSemana: pattern.runsPerWeek,
-            qualidadePorSemana: pattern.qualityPerWeek,
-            mixDeTreinos: pattern.typeMix,
-            paceLeveHabitualSegKm: pattern.easyPace ?? null,
-            longaoHabitual: pattern.longRun ?? null,
-            treinosTipicos: Object.fromEntries(
-              Object.entries(pattern.typicalQuality).map(([type, typical]) => [
-                type,
-                {
-                  km: typical?.km,
-                  paceSegKm: typical?.pace,
-                  paceDeTiroSegKm: typical?.repPace ?? null,
-                  repeticoes: typical?.reps,
-                },
-              ]),
-            ),
-            ajusteAplicado: patternNote ?? null,
-          }
-        : null,
-      meta: {
-        titulo: goal.title,
-        provaKm: goal.targetDistance / 1000,
-        dataAlvo: goal.targetDate,
-        paceObjetivo: this.formatPace(paces.goal),
-        diasPorSemana: goal.daysPerWeek,
-        diaLongao: goal.longRunDay,
-        tempoAlvo: goal.targetTime ? formatRaceTime(goal.targetTime) : null,
-        tempoProjetado: assessment
-          ? formatRaceTime(assessment.predictedTime)
-          : null,
-        melhoraNecessariaPct: assessment
-          ? Math.round(assessment.requiredImprovement * 100)
-          : null,
-        ganhoMaximoPct: assessment
-          ? Math.round(assessment.maxImprovement * 100)
-          : null,
-        vereditoMeta: assessment?.verdict ?? null,
-        paceRealista: assessment
-          ? this.formatPace(assessment.realisticPace)
-          : null,
-      },
-      paces: {
-        intervaloSegKm: paces.interval,
-        limiarSegKm: paces.threshold,
-        leveSegKm: paces.easy,
-      },
-      semanas: summaries.map((summary, index) => ({
-        semana: summary.weekStart.slice(0, 10),
-        fase: summary.phase,
-        volumeKm: summary.weeklyKm,
-        longaoKm: summary.longKm,
-        treinosDeQualidade: summary.workouts,
-        sessoes: (plans[index]?.sessions ?? []).map((s) => ({
-          dia: s.day,
-          tipo: s.type,
-          km: Math.round((s.plannedDistance / 1000) * 10) / 10,
-          paceSegKm: Math.round(s.plannedPace),
-        })),
-      })),
+  private async backfillPlanReview(plan: TrainingPlan): Promise<void> {
+    if (!(await this.aiProviderState.tryStartPlanReview(plan.id))) return;
+    if (!plan.goalId) return;
+
+    const goal = await this.goalRepository.findOne({
+      where: { id: plan.goalId, userId: plan.userId },
     });
+    if (!goal) return;
+
+    const profile = await this.athleteProfileService.build(
+      plan.userId,
+      goal,
+      new Date(),
+      { recentOnly: true },
+    );
+
+    const remainingWeeks = Math.max(
+      Math.ceil(
+        (new Date(goal.targetDate).getTime() -
+          new Date(plan.weekStart).getTime()) /
+          WEEK_MS,
+      ),
+      1,
+    );
+    const { paces, assessment } = this.buildPaces(
+      goal,
+      profile,
+      remainingWeeks,
+    );
+
+    const sessions = plan.sessions ?? [];
+    const week: PlanReviewWeek = {
+      weekStart: plan.weekStart,
+      phase: null,
+      weeklyKm: Math.round(sumPlannedVolumeMeters(sessions) / 1000),
+      longKm:
+        Math.round(
+          (sessions.reduce(
+            (longest, session) =>
+              session.type === 'rest'
+                ? longest
+                : Math.max(longest, session.plannedDistance ?? 0),
+            0,
+          ) /
+            1000) *
+            10,
+        ) / 10,
+      workouts: [],
+      sessions: sessions.map((session) => ({
+        day: session.day,
+        type: session.type,
+        km: Math.round((session.plannedDistance / 1000) * 10) / 10,
+        paceSegKm: Math.round(session.plannedPace),
+      })),
+    };
+
+    const context = buildPlanReviewContext(
+      goal,
+      profile,
+      paces,
+      assessment,
+      undefined,
+      [week],
+    );
 
     const review = await this.aiService.generatePlanReview(context);
     if (!review) return;
 
     const annotations = buildPlanAnnotations({
       review,
-      plans,
-      weekOneNotes: [patternNote, targetNote],
+      plans: [plan],
+      weekOneNotes: [],
     });
 
+    await this.applyPlanAnnotations(annotations);
+  }
+
+  private async applyPlanAnnotations(
+    annotations: PlanAnnotations,
+  ): Promise<void> {
     for (const annotation of annotations.plans) {
       await this.planRepository.update(annotation.planId, annotation.patch);
     }
@@ -2107,5 +2081,38 @@ export class TrainingPlansService {
         annotation.patch,
       );
     }
+  }
+
+  private async enrichPlanWithAi(
+    goal: Goal,
+    profile: AthleteProfile,
+    paces: PaceSet,
+    plans: TrainingPlan[],
+    summaries: PlanReviewWeek[],
+    assessment?: RaceTargetAssessment,
+    targetNote?: string,
+    patternNote?: string,
+  ) {
+    if (!this.aiService.isConfigured() || plans.length === 0) return;
+
+    const context = buildPlanReviewContext(
+      goal,
+      profile,
+      paces,
+      assessment,
+      patternNote,
+      summaries,
+    );
+
+    const review = await this.aiService.generatePlanReview(context);
+    if (!review) return;
+
+    const annotations = buildPlanAnnotations({
+      review,
+      plans,
+      weekOneNotes: [patternNote, targetNote],
+    });
+
+    await this.applyPlanAnnotations(annotations);
   }
 }

@@ -8,6 +8,7 @@ import type { AthleteProfile } from './athlete-profile.service';
 import { TrainingPlan } from './entities/training-plan.entity';
 import { TrainingSession } from './entities/training-session.entity';
 import type { PlanReview } from 'src/ai/ai.service';
+import { AiProviderStateService } from 'src/ai/ai-provider-state.service';
 
 let planCounter = 0;
 let sessionCounter = 0;
@@ -119,6 +120,49 @@ function makePattern(
   };
 }
 
+function fakeRedis() {
+  let now = Date.now();
+  const entries = new Map<string, { value: string; expiresAt: number }>();
+
+  function live(key: string) {
+    const entry = entries.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= now) {
+      entries.delete(key);
+      return null;
+    }
+    return entry;
+  }
+
+  return {
+    set: jest.fn((key: string, value: string, ttlSeconds?: number) => {
+      entries.set(key, {
+        value,
+        expiresAt:
+          ttlSeconds === undefined ? Infinity : now + ttlSeconds * 1000,
+      });
+      return Promise.resolve();
+    }),
+    get: jest.fn((key: string) => Promise.resolve(live(key)?.value ?? null)),
+    del: jest.fn((key: string) => {
+      entries.delete(key);
+      return Promise.resolve();
+    }),
+    setNx: jest.fn((key: string, value: string, ttlSeconds: number) => {
+      if (live(key)) return Promise.resolve(false);
+      entries.set(key, { value, expiresAt: now + ttlSeconds * 1000 });
+      return Promise.resolve(true);
+    }),
+    advance(ms: number) {
+      now += ms;
+    },
+    ttlMs(key: string) {
+      const entry = live(key);
+      return entry ? entry.expiresAt - now : 0;
+    },
+  };
+}
+
 function createMocks(profile: AthleteProfile) {
   planCounter = 0;
   sessionCounter = 0;
@@ -178,6 +222,9 @@ function createMocks(profile: AthleteProfile) {
     isManuallyLinked: jest.fn(() => Promise.resolve(false)),
   };
 
+  const redis = fakeRedis();
+  const aiProviderState = new AiProviderStateService(redis as any);
+
   const service = new TrainingPlansService(
     planRepository as any,
     sessionRepository as any,
@@ -185,7 +232,9 @@ function createMocks(profile: AthleteProfile) {
     activityRepository as any,
     athleteProfileService as any,
     aiService as any,
+    aiProviderState,
     activityMatcher as any,
+    {} as any,
   );
 
   return {
@@ -194,6 +243,8 @@ function createMocks(profile: AthleteProfile) {
     sessionRepository,
     athleteProfileService,
     aiService,
+    aiProviderState,
+    redis,
   };
 }
 
@@ -1190,6 +1241,7 @@ describe('updateSessionsBatch', () => {
       {} as any,
       athleteProfileService as any,
       {} as any,
+      new AiProviderStateService(fakeRedis() as any),
       {} as any,
       dataSource as any,
     );
@@ -1886,17 +1938,23 @@ describe('leitura de plano', () => {
     const sessionRepository = {
       save: jest.fn((session: TrainingSession) => Promise.resolve(session)),
     };
+    const aiService = {
+      isConfigured: jest.fn(() => false),
+      generatePlanReview: jest.fn(),
+    };
+    const redis = fakeRedis();
     const service = new TrainingPlansService(
       planRepository as any,
       sessionRepository as any,
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
+      aiService as any,
+      new AiProviderStateService(redis as any),
       {} as any,
       {} as any,
     );
-    return { service, planRepository, sessionRepository };
+    return { service, planRepository, sessionRepository, aiService, redis };
   }
 
   function readByPath(
@@ -1941,5 +1999,341 @@ describe('leitura de plano', () => {
 
       expect(plan?.plannedWeeklyKm).toBe(13000);
     }
+  });
+});
+
+describe('backfill da anotação do plano', () => {
+  const currentWeekStart = (() => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+    return start;
+  })();
+
+  const flush = () =>
+    new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+  interface PlanReviewContextPayload {
+    semanas: Array<{
+      semana: string;
+      fase: string | null;
+      volumeKm: number;
+      longaoKm: number;
+      treinosDeQualidade: string[];
+      sessoes: Array<{
+        dia: string;
+        tipo: string;
+        km: number;
+        paceSegKm: number;
+      }>;
+    }>;
+  }
+
+  function readContext(mocks: {
+    aiService: {
+      generatePlanReview: jest.Mock<Promise<PlanReview | null>, [string]>;
+    };
+  }): PlanReviewContextPayload {
+    return JSON.parse(
+      mocks.aiService.generatePlanReview.mock.calls[0][0],
+    ) as PlanReviewContextPayload;
+  }
+
+  function shiftWeeks(date: Date, weeks: number): string {
+    const shifted = new Date(date);
+    shifted.setDate(shifted.getDate() + weeks * 7);
+    return shifted.toISOString();
+  }
+
+  function readSessions(planId: string): TrainingSession[] {
+    return [
+      {
+        id: `${planId}-easy`,
+        planId,
+        day: 'Ter',
+        dayOrder: 1,
+        type: 'easy',
+        plannedDistance: 8000,
+        plannedPace: 360,
+        completed: false,
+        notes: 'Rodagem leve.',
+      },
+      {
+        id: `${planId}-rest`,
+        planId,
+        day: 'Qua',
+        dayOrder: 2,
+        type: 'rest',
+        plannedDistance: 0,
+        plannedPace: 0,
+        completed: true,
+        activityId: 'activity-9',
+      },
+      {
+        id: `${planId}-tempo`,
+        planId,
+        day: 'Qui',
+        dayOrder: 3,
+        type: 'tempo',
+        plannedDistance: 5000,
+        plannedPace: 340,
+        completed: false,
+      },
+      {
+        id: `${planId}-long`,
+        planId,
+        day: 'Sáb',
+        dayOrder: 5,
+        type: 'long_run',
+        plannedDistance: 12000,
+        plannedPace: 380,
+        completed: false,
+      },
+    ] as TrainingSession[];
+  }
+
+  function readPlan(overrides: Partial<TrainingPlan> = {}): TrainingPlan {
+    const id = overrides.id ?? 'plan-1';
+    return {
+      id,
+      userId: 'user-1',
+      goalId: 'goal-1',
+      weekStart: currentWeekStart.toISOString(),
+      sessions: readSessions(id),
+      ...overrides,
+    } as TrainingPlan;
+  }
+
+  function backfillService(
+    plans: TrainingPlan[],
+    options: {
+      aiConfigured?: boolean;
+      review?: () => Promise<PlanReview | null>;
+    } = {},
+  ) {
+    const goal = makeGoal({ id: 'goal-1' });
+    const planRepository = {
+      findOne: jest.fn(
+        (query: { where: { userId: string; weekStart: string } }) =>
+          Promise.resolve(
+            plans.find(
+              (plan) =>
+                plan.userId === query.where.userId &&
+                plan.weekStart === query.where.weekStart,
+            ) ?? null,
+          ),
+      ),
+      find: jest.fn(() => Promise.resolve(plans)),
+      save: jest.fn((plan: TrainingPlan) => Promise.resolve(plan)),
+      update: jest.fn(() => Promise.resolve({ affected: 1 })),
+    };
+    const sessionRepository = {
+      save: jest.fn((session: TrainingSession) => Promise.resolve(session)),
+      update: jest.fn(() => Promise.resolve({ affected: 1 })),
+    };
+    const goalRepository = {
+      findOne: jest.fn(() => Promise.resolve(goal)),
+    };
+    const athleteProfileService = {
+      build: jest.fn(() => Promise.resolve(makeProfile())),
+    };
+    const aiService = {
+      isConfigured: jest.fn(() => options.aiConfigured ?? true),
+      generatePlanReview: jest.fn(
+        (context: string): Promise<PlanReview | null> => {
+          void context;
+          return (
+            options.review ?? (() => new Promise<PlanReview | null>(() => {}))
+          )();
+        },
+      ),
+    };
+    const redis = fakeRedis();
+    const service = new TrainingPlansService(
+      planRepository as any,
+      sessionRepository as any,
+      goalRepository as any,
+      {} as any,
+      athleteProfileService as any,
+      aiService as any,
+      new AiProviderStateService(redis as any),
+      {} as any,
+      {} as any,
+    );
+
+    return {
+      service,
+      goal,
+      planRepository,
+      sessionRepository,
+      goalRepository,
+      athleteProfileService,
+      aiService,
+      redis,
+    };
+  }
+
+  it('dispara a revisão da semana atual em background sem esperar a IA', async () => {
+    const plan = readPlan();
+    const mocks = backfillService([plan]);
+
+    const response = await mocks.service.findCurrent('user-1');
+    await flush();
+
+    expect(response).toBe(plan);
+    expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(1);
+    expect(mocks.goalRepository.findOne).toHaveBeenCalledWith({
+      where: { id: 'goal-1', userId: 'user-1' },
+    });
+    expect(mocks.athleteProfileService.build).toHaveBeenCalledWith(
+      'user-1',
+      mocks.goal,
+      expect.any(Date),
+      { recentOnly: true },
+    );
+
+    const context = readContext(mocks);
+    expect(context.semanas).toEqual([
+      {
+        semana: plan.weekStart.slice(0, 10),
+        fase: null,
+        volumeKm: 25,
+        longaoKm: 12,
+        treinosDeQualidade: [],
+        sessoes: [
+          { dia: 'Ter', tipo: 'easy', km: 8, paceSegKm: 360 },
+          { dia: 'Qua', tipo: 'rest', km: 0, paceSegKm: 0 },
+          { dia: 'Qui', tipo: 'tempo', km: 5, paceSegKm: 340 },
+          { dia: 'Sáb', tipo: 'long_run', km: 12, paceSegKm: 380 },
+        ],
+      },
+    ]);
+    expect(mocks.planRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('não dispara backfill quando o plano já tem foco ou notas', async () => {
+    for (const existing of [
+      { focus: 'Foco da semana' },
+      { coachNotes: 'Notas' },
+    ]) {
+      const mocks = backfillService([readPlan(existing)]);
+
+      await mocks.service.findCurrent('user-1');
+      await flush();
+
+      expect(mocks.aiService.generatePlanReview).not.toHaveBeenCalled();
+      expect(mocks.redis.setNx).not.toHaveBeenCalled();
+    }
+
+    for (const empty of [{ focus: '' }, { coachNotes: '' }]) {
+      const mocks = backfillService([readPlan(empty)]);
+
+      await mocks.service.findCurrent('user-1');
+      await flush();
+
+      expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('avalia só o plano da semana atual na lista e não bloqueia a resposta', async () => {
+    const previous = readPlan({
+      id: 'plan-previous',
+      weekStart: shiftWeeks(currentWeekStart, -1),
+    });
+    const current = readPlan({ id: 'plan-current' });
+    const next = readPlan({
+      id: 'plan-next',
+      weekStart: shiftWeeks(currentWeekStart, 1),
+    });
+    const mocks = backfillService([previous, current, next]);
+
+    const response = await mocks.service.findAll('user-1');
+    await flush();
+
+    expect(response).toHaveLength(3);
+    expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(1);
+    expect(mocks.planRepository.update).not.toHaveBeenCalled();
+
+    const context = readContext(mocks);
+    expect(context.semanas).toHaveLength(1);
+    expect(context.semanas[0].semana).toBe(
+      currentWeekStart.toISOString().slice(0, 10),
+    );
+  });
+
+  it('limita a tentativa por plano a uma a cada 60 segundos', async () => {
+    const plan = readPlan();
+    const mocks = backfillService([plan], {
+      review: () => Promise.resolve(null),
+    });
+
+    await mocks.service.findCurrent('user-1');
+    await flush();
+
+    expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(1);
+    const key = `ai:plan-review:attempt:${plan.id}`;
+    expect(mocks.redis.setNx).toHaveBeenCalledWith(key, expect.any(String), 60);
+    expect(mocks.redis.ttlMs(key)).toBe(60000);
+
+    await mocks.service.findCurrent('user-1');
+    await flush();
+
+    expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(1);
+
+    mocks.redis.advance(60000);
+    await mocks.service.findCurrent('user-1');
+    await flush();
+
+    expect(mocks.aiService.generatePlanReview).toHaveBeenCalledTimes(2);
+  });
+
+  it('grava só foco, notas do plano e dicas no backfill', async () => {
+    const plan = readPlan();
+    const review: PlanReview = {
+      overview: 'Estratégia da semana.',
+      weeks: [
+        {
+          weekStart: plan.weekStart.slice(0, 10),
+          focus: 'Base consistente',
+          rationale: 'Justificativa da semana.',
+          tips: [{ day: 'Ter', text: 'Mantenha o pace leve.' }],
+        },
+      ],
+    };
+    const mocks = backfillService([plan], {
+      review: () => Promise.resolve(review),
+    });
+
+    await mocks.service.findCurrent('user-1');
+    const before = (plan.sessions ?? []).map((session) => ({ ...session }));
+    await flush();
+
+    expect(mocks.planRepository.update).toHaveBeenCalledTimes(1);
+    expect(mocks.planRepository.update).toHaveBeenCalledWith(plan.id, {
+      focus: 'Base consistente',
+      coachNotes: 'Estratégia da semana.\n\nJustificativa da semana.',
+    });
+    expect(mocks.sessionRepository.update).toHaveBeenCalledTimes(1);
+    expect(mocks.sessionRepository.update).toHaveBeenCalledWith('plan-1-easy', {
+      notes: 'Rodagem leve. Dica do Coach: Mantenha o pace leve.',
+    });
+    expect(mocks.planRepository.save).not.toHaveBeenCalled();
+    expect(mocks.sessionRepository.save).not.toHaveBeenCalled();
+    expect(plan.sessions).toEqual(before);
+  });
+
+  it('não chama a IA na leitura sem fornecedor configurado', async () => {
+    const plan = readPlan();
+    const mocks = backfillService([plan], { aiConfigured: false });
+
+    const response = await mocks.service.findCurrent('user-1');
+    await flush();
+
+    expect(response).toBe(plan);
+    expect(mocks.aiService.generatePlanReview).not.toHaveBeenCalled();
+    expect(mocks.redis.setNx).not.toHaveBeenCalled();
+    expect(mocks.goalRepository.findOne).not.toHaveBeenCalled();
   });
 });
